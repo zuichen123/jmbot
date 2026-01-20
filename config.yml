@@ -1,0 +1,26 @@
+# Bot Settings
+admin_id: 627585966
+http_port: 8071
+websocket_url: "ws://10.0.0.101:13001"
+websocket_token: "1"
+
+# Path Settings
+file_dir: "./pdf/"
+log_dir: "./logs"
+
+# Remote Transfer Settings (SCP)
+remote_user: "zuichen"
+remote_host: "10.0.0.101"
+remote_temp_dir: "/home/zuichen/Server/Napcat2/.config/QQ/temp/"
+local_ssh_key: "/home/zuichen/.ssh/id_rsa"
+docker_internal_path: "/app/.config/QQ/temp/"
+
+# Download Limits
+max_concurrent_downloads: 2
+max_episodes: 20
+
+# Blacklists
+banned_id: []
+banned_user: []
+banned_group: []
+banned_tags: []
