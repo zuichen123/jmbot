@@ -208,6 +208,25 @@ class NapcatWebSocketBot:
         if token:
             self.headers["Authorization"] = f"Bearer {token}"
 
+    async def _recv_until_echo(self, websocket, expected_echo, timeout=10):
+        end_time = time.monotonic() + timeout
+        while True:
+            remaining = end_time - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                resp = await asyncio.wait_for(websocket.recv(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return None
+
+            try:
+                resp_data = json.loads(resp)
+            except json.JSONDecodeError:
+                continue
+
+            if resp_data.get("echo") == expected_echo:
+                return resp_data
+
     async def send_private_message(self, user_id, message):
         payload = {
             "action": "send_private_msg",
@@ -221,7 +240,7 @@ class NapcatWebSocketBot:
             # ✅ 这里的 extra_headers 需要 websockets >= 10.0
             async with websockets.connect(self.websocket_url, extra_headers=self.headers) as websocket:
                 await websocket.send(json.dumps(payload))
-                await websocket.recv()
+                await self._recv_until_echo(websocket, payload["echo"])
         except Exception as e:
             log("[❌ message_sender]", f"发送私聊文本消息失败: {e}")
 
@@ -237,7 +256,7 @@ class NapcatWebSocketBot:
         try:
             async with websockets.connect(self.websocket_url, extra_headers=self.headers) as websocket:
                 await websocket.send(json.dumps(payload))
-                await websocket.recv()
+                await self._recv_until_echo(websocket, payload["echo"])
         except Exception as e:
             log("[❌ message_sender]", f"发送群文本消息失败: {e}")
 
@@ -264,12 +283,14 @@ class NapcatWebSocketBot:
         try:
             async with websockets.connect(self.websocket_url, extra_headers=self.headers) as websocket:
                 await websocket.send(json.dumps(payload))
-                resp = await websocket.recv()
-                resp_data = json.loads(resp)
+                resp_data = await self._recv_until_echo(websocket, payload["echo"])
                 
                 # 发送后清理
                 delete_remote_file(remote_file_path)
                 
+                if not resp_data:
+                    log("[❌ message_sender]", "发送私聊文件失败: 未收到响应", "error")
+                    return False
                 if resp_data.get("status") == "ok":
                     log("[✅ message_sender]", "私聊本子发送成功")
                     return True
@@ -304,12 +325,14 @@ class NapcatWebSocketBot:
         try:
             async with websockets.connect(self.websocket_url, extra_headers=self.headers) as websocket:
                 await websocket.send(json.dumps(payload))
-                resp = await websocket.recv()
-                resp_data = json.loads(resp)
+                resp_data = await self._recv_until_echo(websocket, payload["echo"])
                 
                 # 发送后清理
                 delete_remote_file(remote_file_path)
 
+                if not resp_data:
+                    log("[❌ message_sender]", "发送群文件失败: 未收到响应", "error")
+                    return False
                 if resp_data.get("status") == "ok":
                     log("[✅ message_sender]", "群聊本子发送成功")
                     return True
