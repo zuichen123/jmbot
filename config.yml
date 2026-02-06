@@ -27,6 +27,8 @@ enc_password_group:
     '992833511': '114514'
     '838187768': '350234'
     '741048265': '123456'
+regex_enabled_global: false
+regex_enabled_group: {}
 banned_id: []
 banned_user: []
 banned_group: []

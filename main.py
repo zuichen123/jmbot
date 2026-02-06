@@ -62,6 +62,9 @@ enc_enabled_group: dict = _config.get("enc_enabled_group", {})
 enc_password_global: str = _config.get("enc_password_global", "")
 enc_password_group: dict = _config.get("enc_password_group", {})
 
+regex_enabled_global: bool = bool(_config.get("regex_enabled_global", False))
+regex_enabled_group: dict = _config.get("regex_enabled_group", {})
+
 # ====================== 日志系统配置 ======================
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "jm_bot.log")
@@ -214,6 +217,24 @@ def set_group_enc_password(group_id: int, password: str):
     _config["enc_password_group"] = enc_password_group
     update_config()
 
+def get_regex_enabled(group_id: int | None):
+    if group_id is not None:
+        group_enabled = regex_enabled_group.get(str(group_id))
+        if isinstance(group_enabled, bool):
+            return group_enabled
+    return bool(regex_enabled_global)
+
+def set_global_regex_enabled(enabled: bool):
+    global regex_enabled_global
+    regex_enabled_global = enabled
+    _config["regex_enabled_global"] = enabled
+    update_config()
+
+def set_group_regex_enabled(group_id: int, enabled: bool):
+    regex_enabled_group[str(group_id)] = enabled
+    _config["regex_enabled_group"] = regex_enabled_group
+    update_config()
+
 def sanitize_filename_component(value: str) -> str:
     sanitized = re.sub(r'[\\/:*?"<>|]+', "_", value)
     return sanitized.strip()
@@ -272,19 +293,28 @@ def extract_jm_numbers(message: str) -> list[str]:
     cleaned_message = strip_cq_codes(message)
     return re.findall(r"\d+", cleaned_message)
 
-def extract_jm_numbers_from_event(data) -> list[str]:
+def extract_jm_numbers_with_regex(message: str) -> list[str]:
+    cleaned_message = strip_cq_codes(message)
+    matches = re.findall(r"\bjm(\d+)\b", cleaned_message, flags=re.IGNORECASE)
+    return matches
+
+def extract_text_from_event(data) -> str:
     message = data.get("message")
     if isinstance(message, list):
         text_parts = []
         for segment in message:
             if segment.get("type") == "text":
                 text_parts.append(segment.get("data", {}).get("text", ""))
-        combined_text = "".join(text_parts)
-        return re.findall(r"\d+", combined_text)
+        return "".join(text_parts)
     if isinstance(message, str):
-        return extract_jm_numbers(message)
-    raw_message = data.get("raw_message", "")
-    return extract_jm_numbers(raw_message)
+        return message
+    return data.get("raw_message", "")
+
+def extract_jm_numbers_from_event(data, regex_enabled: bool) -> list[str]:
+    text = extract_text_from_event(data)
+    if regex_enabled:
+        return extract_jm_numbers_with_regex(text)
+    return extract_jm_numbers(text)
 
 def is_short_number(number: str | int) -> bool:
     return len(str(number)) < 4
@@ -663,7 +693,8 @@ def get_help_message():
         "3) /jm mode pdf|zip：设置发送格式（群聊设置群专用，私聊设置全局）\n"
         "4) /jm enc on|off：设置是否加密（群聊设置群专用，私聊设置全局）\n"
         "5) /jm passwd <密码>：设置加密密码（群聊设置群专用，私聊设置全局）\n"
-        "6) /jm help：查看帮助\n\n"
+        "6) /jm regex on|off：设置正则模式（群聊设置群专用，私聊设置全局）\n"
+        "7) /jm help：查看帮助\n\n"
         "🔧 管理命令（仅管理员）：\n"
         "• 开启禁漫功能 / 关闭禁漫功能\n"
         "• /jm-addban <ID>：封禁本子\n"
@@ -739,6 +770,7 @@ async def handle_message_event(data):
     match_HELP = re.match(r"^/jm\s+help$", raw_message)
     match_MODE = re.match(r"^/jm\s+mode\s+(pdf|zip)$", raw_message)
     match_ENC = re.match(r"^/jm\s+enc\s+(on|off)$", raw_message)
+    match_REGEX = re.match(r"^/jm\s+regex\s+(on|off)$", raw_message)
     match_PASSWD = re.match(r"^/jm\s+passwd\s+(.+)$", raw_message)
     match_ON = re.match(r"开启禁漫功能", raw_message)
     match_OFF = re.match(r"关闭禁漫功能", raw_message)
@@ -777,6 +809,21 @@ async def handle_message_event(data):
             set_global_enc_enabled(enabled)
             state = "开启" if enabled else "关闭"
             await send_message(message_type, group_id, user_id, f"✅ 全局加密已{state}")
+        return
+
+    if match_REGEX:
+        if user_id != admin_id:
+            await send_message(message_type, group_id, user_id, "❌ 仅管理员可设置正则模式")
+            return
+        enabled = match_REGEX.group(1) == "on"
+        if message_type == "group" and group_id:
+            set_group_regex_enabled(group_id, enabled)
+            state = "开启" if enabled else "关闭"
+            await send_message(message_type, group_id, user_id, f"✅ 本群正则模式已{state}")
+        else:
+            set_global_regex_enabled(enabled)
+            state = "开启" if enabled else "关闭"
+            await send_message(message_type, group_id, user_id, f"✅ 全局正则模式已{state}")
         return
 
     if match_PASSWD:
@@ -855,7 +902,8 @@ async def handle_message_event(data):
             await send_message(message_type, group_id, user_id, "❌ 禁漫功能未开启")
         return
 
-    numbers = extract_jm_numbers_from_event(data)
+    regex_enabled = get_regex_enabled(group_id if message_type == "group" else None)
+    numbers = extract_jm_numbers_from_event(data, regex_enabled)
     if numbers:
         await enqueue_downloads(numbers, message_type, group_id, user_id, data)
 
