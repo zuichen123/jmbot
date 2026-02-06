@@ -17,6 +17,7 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 import subprocess
 import tempfile
+import zipfile
 
 # ====================== 基础配置 (已适配 NapCat Docker版) ======================
 app = FastAPI()
@@ -50,6 +51,9 @@ with open("config.yml", "r", encoding="utf-8") as f:
 banned_id: list[str] = [str(id) for id in _config.get("banned_id", [])]
 banned_user: list[str] = [str(user) for user in _config.get("banned_user", [])]
 banned_group: list[str] = [str(group) for group in _config.get("banned_group", [])]
+
+send_mode_global: str = _config.get("send_mode_global", "pdf")
+send_mode_group: dict = _config.get("send_mode_group", {})
 
 # ====================== 日志系统配置 ======================
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -148,6 +152,42 @@ def delete_remote_file(remote_file_path):
     except subprocess.CalledProcessError as e:
         log("[❌ Cleaner]", f"删除临时文件失败：{e.stderr}", "error")
         return False
+
+def get_send_mode(group_id: int | None):
+    if group_id is not None:
+        group_mode = send_mode_group.get(str(group_id))
+        if group_mode in ("pdf", "zip"):
+            return group_mode
+    return send_mode_global if send_mode_global in ("pdf", "zip") else "pdf"
+
+def set_global_send_mode(mode: str):
+    global send_mode_global
+    send_mode_global = mode
+    _config["send_mode_global"] = mode
+    update_config()
+
+def set_group_send_mode(group_id: int, mode: str):
+    send_mode_group[str(group_id)] = mode
+    _config["send_mode_group"] = send_mode_group
+    update_config()
+
+def build_zip_for_pdf(pdf_path: str):
+    if not os.path.exists(pdf_path):
+        return None
+    base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    temp_zip.close()
+    try:
+        with zipfile.ZipFile(temp_zip.name, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.write(pdf_path, arcname=f"{base_name}.pdf")
+        return temp_zip.name
+    except Exception as e:
+        log("[❌ ZIP]", f"压缩失败: {e}", "error")
+        try:
+            os.remove(temp_zip.name)
+        except Exception:
+            pass
+        return None
 
 # ================ 信息发送类 (已升级支持 Token) ================
 class NapcatWebSocketBot:
@@ -374,12 +414,31 @@ async def process_jm_command(number, message_type, group_id, user_id):
         if not file_path:
             log("[❌ JM]", f"下载本子{number}：{file_name}完成，但未找到PDF文件")
             return "❌ 下载完成但未找到PDF文件"
-        file_size = os.path.getsize(file_path) / (1024 * 1024)
-        msg = f"✅ 天堂正在发送：\n车牌号：{number}\n本子名：{title}\n文件大小：({file_size:.2f}MB)"
+
+        send_mode = get_send_mode(group_id if message_type == "group" else None)
+        send_path = file_path
+        temp_zip_path = None
+
+        if send_mode == "zip":
+            temp_zip_path = build_zip_for_pdf(file_path)
+            if not temp_zip_path:
+                log("[❌ JM]", f"本子 {number} 压缩失败，回退发送 PDF")
+            else:
+                send_path = temp_zip_path
+
+        file_size = os.path.getsize(send_path) / (1024 * 1024)
+        file_label = "ZIP" if send_path.endswith(".zip") else "PDF"
+        msg = f"✅ 天堂正在发送：\n车牌号：{number}\n本子名：{title}\n文件类型：{file_label}\n文件大小：({file_size:.2f}MB)"
         if message_type == "group":
-            send_result = await bot.send_group_file(group_id, file_path)
+            send_result = await bot.send_group_file(group_id, send_path)
         else:
-            send_result = await bot.send_private_file(user_id, file_path)
+            send_result = await bot.send_private_file(user_id, send_path)
+
+        if temp_zip_path:
+            try:
+                os.remove(temp_zip_path)
+            except Exception:
+                pass
 
         if send_result:
             log("[✅ JM]", f"本子 {number} 处理完成并发送完成")
@@ -446,6 +505,20 @@ def requester_information(message_type, group_name, nickname, group_id, user_id,
 
     log(tag, msg)
 
+def get_help_message():
+    return (
+        "📖 使用说明：\n"
+        "1) /jm <ID>：下载并发送本子\n"
+        "2) /jm-look <ID>：查看本子信息\n"
+        "3) /jm mode pdf|zip：设置发送格式（群聊设置群专用，私聊设置全局）\n"
+        "4) /jm help：查看帮助\n\n"
+        "🔧 管理命令（仅管理员）：\n"
+        "• 开启禁漫功能 / 关闭禁漫功能\n"
+        "• /jm-addban <ID>：封禁本子\n"
+        "• /jm-delban <ID>：解封本子\n"
+        "• /jm-setmax <num>：设置最大章节数\n"
+    )
+
 # ====================== 消息事件处理 (保持不变) ======================
 async def handle_message_event(data):
     post_type = data.get("post_type")
@@ -457,6 +530,8 @@ async def handle_message_event(data):
     user_id = data.get("user_id")
     group_id = data.get("group_id")
 
+    match_HELP = re.match(r"^/jm\s+help$", raw_message)
+    match_MODE = re.match(r"^/jm\s+mode\s+(pdf|zip)$", raw_message)
     match_ON = re.match(r"开启禁漫功能", raw_message)
     match_OFF = re.match(r"关闭禁漫功能", raw_message)
     match_ADDBAN = re.match(r"^/jm-addban\s+(\d+)$", raw_message)
@@ -465,6 +540,23 @@ async def handle_message_event(data):
     match_JM = re.match(r"^/jm\s+(\d+)$", raw_message)
     if not match_JM: match_JM = re.match(r"jm+(\d+)$", raw_message)
     match_JML = re.match(r"^/jm-look\s+(\d+)$", raw_message)
+
+    if match_HELP:
+        await send_message(message_type, group_id, user_id, get_help_message())
+        return
+
+    if match_MODE:
+        if user_id != admin_id:
+            await send_message(message_type, group_id, user_id, "❌ 仅管理员可设置发送格式")
+            return
+        mode = match_MODE.group(1)
+        if message_type == "group" and group_id:
+            set_group_send_mode(group_id, mode)
+            await send_message(message_type, group_id, user_id, f"✅ 本群发送格式已设置为：{mode.upper()}")
+        else:
+            set_global_send_mode(mode)
+            await send_message(message_type, group_id, user_id, f"✅ 全局发送格式已设置为：{mode.upper()}")
+        return
 
     if match_ON and user_id == admin_id:
         log("[🟢 Admin]", "✅ 开启禁漫功能")
@@ -582,4 +674,3 @@ if __name__ == "__main__":
     except Exception as e:
         log("[❌ SYSTEM]", f"程序异常退出：{e}", "error")
         sys.exit(1)
-

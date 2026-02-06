@@ -19,6 +19,10 @@ docker_internal_path: "/app/.config/QQ/temp/"
 max_concurrent_downloads: 2
 max_episodes: 20
 
+# Send Mode (global and per-group)
+send_mode_global: "pdf"
+send_mode_group: {}
+
 # Blacklists
 banned_id: []
 banned_user: []
