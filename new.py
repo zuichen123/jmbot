@@ -552,6 +552,8 @@ async def process_jm_command(number, message_type, group_id, user_id):
         file_size = os.path.getsize(send_path) / (1024 * 1024)
         file_label = "ZIP" if send_path.endswith(".zip") else "PDF"
         msg = f"✅ 天堂正在发送：\n车牌号：{number}\n本子名：{title}\n文件类型：{file_label}\n文件大小：({file_size:.2f}MB)"
+        if enc_enabled and password:
+            msg += f"\n密码：{password}"
         if message_type == "group":
             send_result = await bot.send_group_file(group_id, send_path)
         else:
