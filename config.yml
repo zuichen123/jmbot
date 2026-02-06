@@ -14,6 +14,10 @@ max_episodes: 20
 send_mode_global: pdf
 send_mode_group:
     '609976107': pdf
+enc_enabled_global: false
+enc_enabled_group: {}
+enc_password_global: ''
+enc_password_group: {}
 banned_id: []
 banned_user: []
 banned_group: []

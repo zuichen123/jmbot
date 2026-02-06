@@ -18,6 +18,7 @@ from logging.handlers import TimedRotatingFileHandler
 import subprocess
 import tempfile
 import zipfile
+from PyPDF2 import PdfReader, PdfWriter
 
 # ====================== 基础配置 (已适配 NapCat Docker版) ======================
 app = FastAPI()
@@ -54,6 +55,12 @@ banned_group: list[str] = [str(group) for group in _config.get("banned_group", [
 
 send_mode_global: str = _config.get("send_mode_global", "pdf")
 send_mode_group: dict = _config.get("send_mode_group", {})
+
+enc_enabled_global: bool = bool(_config.get("enc_enabled_global", False))
+enc_enabled_group: dict = _config.get("enc_enabled_group", {})
+
+enc_password_global: str = _config.get("enc_password_global", "")
+enc_password_group: dict = _config.get("enc_password_group", {})
 
 # ====================== 日志系统配置 ======================
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -171,18 +178,84 @@ def set_group_send_mode(group_id: int, mode: str):
     _config["send_mode_group"] = send_mode_group
     update_config()
 
-def build_zip_for_pdf(pdf_path: str):
+def get_enc_enabled(group_id: int | None):
+    if group_id is not None:
+        group_enabled = enc_enabled_group.get(str(group_id))
+        if isinstance(group_enabled, bool):
+            return group_enabled
+    return bool(enc_enabled_global)
+
+def set_global_enc_enabled(enabled: bool):
+    global enc_enabled_global
+    enc_enabled_global = enabled
+    _config["enc_enabled_global"] = enabled
+    update_config()
+
+def set_group_enc_enabled(group_id: int, enabled: bool):
+    enc_enabled_group[str(group_id)] = enabled
+    _config["enc_enabled_group"] = enc_enabled_group
+    update_config()
+
+def get_enc_password(group_id: int | None):
+    if group_id is not None:
+        group_pwd = enc_password_group.get(str(group_id))
+        if group_pwd:
+            return str(group_pwd)
+    return str(enc_password_global) if enc_password_global else ""
+
+def set_global_enc_password(password: str):
+    global enc_password_global
+    enc_password_global = password
+    _config["enc_password_global"] = password
+    update_config()
+
+def set_group_enc_password(group_id: int, password: str):
+    enc_password_group[str(group_id)] = password
+    _config["enc_password_group"] = enc_password_group
+    update_config()
+
+def sanitize_filename_component(value: str) -> str:
+    sanitized = re.sub(r'[\\/:*?"<>|]+', "_", value)
+    return sanitized.strip()
+
+def build_encrypted_pdf(pdf_path: str, password: str):
     if not os.path.exists(pdf_path):
         return None
     base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+    safe_password = sanitize_filename_component(password) or "password"
     temp_dir = tempfile.gettempdir()
-    zip_path = os.path.join(temp_dir, f"{base_name}.zip")
+    enc_path = os.path.join(temp_dir, f"{base_name}_{safe_password}.pdf")
+    if os.path.exists(enc_path):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        enc_path = os.path.join(temp_dir, f"{base_name}_{safe_password}_{timestamp}.pdf")
+    try:
+        reader = PdfReader(pdf_path)
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+        writer.encrypt(password)
+        with open(enc_path, "wb") as f:
+            writer.write(f)
+        return enc_path
+    except Exception as e:
+        log("[❌ PDF]", f"加密失败: {e}", "error")
+        try:
+            os.remove(enc_path)
+        except Exception:
+            pass
+        return None
+
+def build_zip_for_file(file_path: str, zip_base_name: str):
+    if not os.path.exists(file_path):
+        return None
+    temp_dir = tempfile.gettempdir()
+    zip_path = os.path.join(temp_dir, f"{zip_base_name}.zip")
     if os.path.exists(zip_path):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        zip_path = os.path.join(temp_dir, f"{base_name}_{timestamp}.zip")
+        zip_path = os.path.join(temp_dir, f"{zip_base_name}_{timestamp}.zip")
     try:
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.write(pdf_path, arcname=f"{base_name}.pdf")
+            zf.write(file_path, arcname=os.path.basename(file_path))
         return zip_path
     except Exception as e:
         log("[❌ ZIP]", f"压缩失败: {e}", "error")
@@ -450,15 +523,31 @@ async def process_jm_command(number, message_type, group_id, user_id):
             return "❌ 下载完成但未找到PDF文件"
 
         send_mode = get_send_mode(group_id if message_type == "group" else None)
+        enc_enabled = get_enc_enabled(group_id if message_type == "group" else None)
+        password = get_enc_password(group_id if message_type == "group" else None)
+
+        temp_files = []
         send_path = file_path
-        temp_zip_path = None
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        zip_base_name = base_name
+
+        if enc_enabled:
+            if not password:
+                return "❌ 未设置加密密码，请先使用 /jm passwd <密码> 设置"
+            enc_path = build_encrypted_pdf(file_path, password)
+            if not enc_path:
+                return "❌ 文件加密失败"
+            temp_files.append(enc_path)
+            send_path = enc_path
+            safe_password = sanitize_filename_component(password) or "password"
+            zip_base_name = f"{base_name}_{safe_password}"
 
         if send_mode == "zip":
-            temp_zip_path = build_zip_for_pdf(file_path)
-            if not temp_zip_path:
-                log("[❌ JM]", f"本子 {number} 压缩失败，回退发送 PDF")
-            else:
-                send_path = temp_zip_path
+            zip_path = build_zip_for_file(send_path, zip_base_name)
+            if not zip_path:
+                return "❌ 文件压缩失败"
+            temp_files.append(zip_path)
+            send_path = zip_path
 
         file_size = os.path.getsize(send_path) / (1024 * 1024)
         file_label = "ZIP" if send_path.endswith(".zip") else "PDF"
@@ -468,9 +557,9 @@ async def process_jm_command(number, message_type, group_id, user_id):
         else:
             send_result = await bot.send_private_file(user_id, send_path)
 
-        if temp_zip_path:
+        for temp_file in temp_files:
             try:
-                os.remove(temp_zip_path)
+                os.remove(temp_file)
             except Exception:
                 pass
 
@@ -545,7 +634,9 @@ def get_help_message():
         "1) /jm <ID>：下载并发送本子\n"
         "2) /jm-look <ID>：查看本子信息\n"
         "3) /jm mode pdf|zip：设置发送格式（群聊设置群专用，私聊设置全局）\n"
-        "4) /jm help：查看帮助\n\n"
+        "4) /jm enc on|off：设置是否加密（群聊设置群专用，私聊设置全局）\n"
+        "5) /jm passwd <密码>：设置加密密码（群聊设置群专用，私聊设置全局）\n"
+        "6) /jm help：查看帮助\n\n"
         "🔧 管理命令（仅管理员）：\n"
         "• 开启禁漫功能 / 关闭禁漫功能\n"
         "• /jm-addban <ID>：封禁本子\n"
@@ -619,6 +710,8 @@ async def handle_message_event(data):
 
     match_HELP = re.match(r"^/jm\s+help$", raw_message)
     match_MODE = re.match(r"^/jm\s+mode\s+(pdf|zip)$", raw_message)
+    match_ENC = re.match(r"^/jm\s+enc\s+(on|off)$", raw_message)
+    match_PASSWD = re.match(r"^/jm\s+passwd\s+(.+)$", raw_message)
     match_ON = re.match(r"开启禁漫功能", raw_message)
     match_OFF = re.match(r"关闭禁漫功能", raw_message)
     match_ADDBAN = re.match(r"^/jm-addban\s+(\d+)$", raw_message)
@@ -641,6 +734,37 @@ async def handle_message_event(data):
         else:
             set_global_send_mode(mode)
             await send_message(message_type, group_id, user_id, f"✅ 全局发送格式已设置为：{mode.upper()}")
+        return
+
+    if match_ENC:
+        if user_id != admin_id:
+            await send_message(message_type, group_id, user_id, "❌ 仅管理员可设置加密开关")
+            return
+        enabled = match_ENC.group(1) == "on"
+        if message_type == "group" and group_id:
+            set_group_enc_enabled(group_id, enabled)
+            state = "开启" if enabled else "关闭"
+            await send_message(message_type, group_id, user_id, f"✅ 本群加密已{state}")
+        else:
+            set_global_enc_enabled(enabled)
+            state = "开启" if enabled else "关闭"
+            await send_message(message_type, group_id, user_id, f"✅ 全局加密已{state}")
+        return
+
+    if match_PASSWD:
+        if user_id != admin_id:
+            await send_message(message_type, group_id, user_id, "❌ 仅管理员可设置加密密码")
+            return
+        password = match_PASSWD.group(1).strip()
+        if not password:
+            await send_message(message_type, group_id, user_id, "❌ 密码不能为空")
+            return
+        if message_type == "group" and group_id:
+            set_group_enc_password(group_id, password)
+            await send_message(message_type, group_id, user_id, "✅ 本群加密密码已设置")
+        else:
+            set_global_enc_password(password)
+            await send_message(message_type, group_id, user_id, "✅ 全局加密密码已设置")
         return
 
     if match_ON and user_id == admin_id:
