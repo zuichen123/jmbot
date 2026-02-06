@@ -189,6 +189,9 @@ def build_zip_for_pdf(pdf_path: str):
             pass
         return None
 
+def extract_jm_numbers(message: str) -> list[str]:
+    return re.findall(r"\d+", message)
+
 # ================ 信息发送类 (已升级支持 Token) ================
 class NapcatWebSocketBot:
     def __init__(self, websocket_url, token=None):
@@ -317,6 +320,7 @@ client = jmcomic.JmOption.default().new_jm_client()
 max_episodes = 20
 jm_functioning = True
 jm_is_running = False
+jm_task_queue: asyncio.Queue = asyncio.Queue()
 
 def get_jm_condition(group_id: int):
     return str(group_id) not in banned_group
@@ -519,6 +523,59 @@ def get_help_message():
         "• /jm-setmax <num>：设置最大章节数\n"
     )
 
+async def enqueue_downloads(numbers, message_type, group_id, user_id, data):
+    if message_type == "group" and str(group_id) in banned_group:
+        await send_message(message_type, group_id, user_id, "❌ 禁漫功能未开启")
+        return
+
+    if str(user_id) in banned_user:
+        await send_message(message_type, group_id, user_id, "❌ 禁止下载或用户被封禁")
+        return
+
+    enqueued_numbers = []
+    for number in numbers:
+        requester_information(
+            message_type,
+            data.get('group_name'),
+            data.get('sender').get('nickname'),
+            group_id,
+            user_id,
+            number,
+            "下载"
+        )
+        if str(number) in banned_id:
+            await send_message(message_type, group_id, user_id, "❌ 禁止下载或用户被封禁")
+            continue
+        await jm_task_queue.put({
+            "number": number,
+            "message_type": message_type,
+            "group_id": group_id,
+            "user_id": user_id,
+        })
+        enqueued_numbers.append(number)
+
+    if len(enqueued_numbers) > 1:
+        await send_message(message_type, group_id, user_id, f"⏳ 正在下载{len(enqueued_numbers)}个本子")
+
+async def jm_task_worker():
+    while True:
+        task = await jm_task_queue.get()
+        try:
+            set_jm_running(True)
+            response = await process_jm_command(
+                task["number"],
+                task["message_type"],
+                task["group_id"],
+                task["user_id"]
+            )
+            await send_message(task["message_type"], task["group_id"], task["user_id"], response)
+        except Exception as e:
+            log("[❌ JM]", f"队列任务处理失败: {e}", "error")
+        finally:
+            jm_task_queue.task_done()
+            if jm_task_queue.empty():
+                set_jm_running(False)
+
 # ====================== 消息事件处理 (保持不变) ======================
 async def handle_message_event(data):
     post_type = data.get("post_type")
@@ -537,8 +594,6 @@ async def handle_message_event(data):
     match_ADDBAN = re.match(r"^/jm-addban\s+(\d+)$", raw_message)
     match_DELBAN = re.match(r"^/jm-delban\s+(\d+)$", raw_message)
     match_MDE = re.match(r"^/jm-setmax\s+(\d+)$", raw_message)
-    match_JM = re.match(r"^/jm\s+(\d+)$", raw_message)
-    if not match_JM: match_JM = re.match(r"jm+(\d+)$", raw_message)
     match_JML = re.match(r"^/jm-look\s+(\d+)$", raw_message)
 
     if match_HELP:
@@ -599,39 +654,28 @@ async def handle_message_event(data):
         await send_message(message_type, group_id, user_id, f"📘 章节数阈值已设为 {num}")
         return
 
-    if get_jm_running() and (match_JM or match_JML):
-        number = match_JM.group(1) if match_JM else match_JML.group(1)
-        requester_information(message_type, data.get('group_name'), data.get('sender').get('nickname'), group_id, user_id, number, "处理")
-        log("[🚫 Request]", f"本子{number}请求驳回，其他本子正在处理中")
-        await send_message(message_type, group_id, user_id, "🚫 正在处理其他本子，请稍候")
+    if match_JML:
+        number = match_JML.group(1)
+        requester_information(
+            message_type,
+            data.get('group_name'),
+            data.get('sender').get('nickname'),
+            group_id,
+            user_id,
+            number,
+            "检索"
+        )
+        if str(group_id) not in banned_group:
+            await send_message(message_type, group_id, user_id, f"🔍 正在检索本子 {number}")
+            info = await look_jm_information(number)
+            await send_message(message_type, group_id, user_id, info)
+        else:
+            await send_message(message_type, group_id, user_id, "❌ 禁漫功能未开启")
         return
 
-    set_jm_running(True)
-    try:
-        if match_JM:
-            number = match_JM.group(1)
-            requester_information(message_type, data.get('group_name'), data.get('sender').get('nickname'), group_id, user_id, number, "下载")
-            if str(group_id) not in banned_group:
-                if str(number) in banned_id or str(user_id) in banned_user:
-                    log("[🚫 Request]", f"本子{number}下载请求驳回-banned")
-                    await send_message(message_type, group_id, user_id, "❌ 禁止下载或用户被封禁")
-                    return
-                response = await process_jm_command(number, message_type, group_id, user_id)
-                await send_message(message_type, group_id, user_id, response)
-            else:
-                log("[🚫 Request]", f"本子{number}检索请求驳回，禁漫功能已关闭")
-                await send_message(message_type, group_id, user_id, "❌ 禁漫功能未开启")
-        elif match_JML:
-            number = match_JML.group(1)
-            requester_information(message_type, data.get('group_name'), data.get('sender').get('nickname'), group_id, user_id, number, "检索")
-            if str(group_id) not in banned_group:
-                await send_message(message_type, group_id, user_id, f"🔍 正在检索本子 {number}")
-                info = await look_jm_information(number)
-                await send_message(message_type, group_id, user_id, info)
-            else:
-                await send_message(message_type, group_id, user_id, "❌ 禁漫功能未开启")
-    finally:
-        set_jm_running(False)
+    numbers = extract_jm_numbers(raw_message)
+    if numbers:
+        await enqueue_downloads(numbers, message_type, group_id, user_id, data)
 
 # ====================== 内存管理任务 ======================
 async def periodic_cleanup():
@@ -661,6 +705,7 @@ async def main():
     log("[📦 SYSTEM]", f"Websockets Version: {websockets.__version__}")
     
     asyncio.create_task(periodic_cleanup())
+    asyncio.create_task(jm_task_worker())
 
     config = uvicorn.Config(app, host="0.0.0.0", port=HTTP_PORT, loop="asyncio", access_log=False)
     server = uvicorn.Server(config)
