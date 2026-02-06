@@ -65,6 +65,10 @@ enc_password_group: dict = _config.get("enc_password_group", {})
 regex_enabled_global: bool = bool(_config.get("regex_enabled_global", False))
 regex_enabled_group: dict = _config.get("regex_enabled_group", {})
 
+# ====================== 去重配置 ======================
+DEDUP_WINDOW_SECONDS = 12 * 60 * 60
+recent_requests: dict[str, dict[str, float]] = {}
+
 # ====================== 日志系统配置 ======================
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "jm_bot.log")
@@ -318,6 +322,31 @@ def extract_jm_numbers_from_event(data, regex_enabled: bool) -> list[str]:
 
 def is_short_number(number: str | int) -> bool:
     return len(str(number)) < 4
+
+def get_request_scope(message_type: str, group_id: int | None, user_id: int | None) -> str:
+    if message_type == "group" and group_id is not None:
+        return f"group:{group_id}"
+    return f"private:{user_id}"
+
+def cleanup_recent_requests(scope_key: str):
+    now = time.time()
+    scope_map = recent_requests.get(scope_key, {})
+    expired_keys = [k for k, ts in scope_map.items() if now - ts > DEDUP_WINDOW_SECONDS]
+    for key in expired_keys:
+        del scope_map[key]
+    if scope_map:
+        recent_requests[scope_key] = scope_map
+    else:
+        recent_requests.pop(scope_key, None)
+
+def is_recent_request(scope_key: str, number: str | int) -> bool:
+    cleanup_recent_requests(scope_key)
+    scope_map = recent_requests.get(scope_key, {})
+    ts = scope_map.get(str(number))
+    return ts is not None and (time.time() - ts) <= DEDUP_WINDOW_SECONDS
+
+def mark_request(scope_key: str, number: str | int):
+    recent_requests.setdefault(scope_key, {})[str(number)] = time.time()
 
 # ================ 信息发送类 (已升级支持 Token) ================
 class NapcatWebSocketBot:
@@ -712,7 +741,8 @@ async def enqueue_downloads(numbers, message_type, group_id, user_id, data):
         await send_message(message_type, group_id, user_id, "❌ 禁止下载或用户被封禁")
         return
 
-    enqueued_numbers = []
+    scope_key = get_request_scope(message_type, group_id, user_id)
+
     for number in numbers:
         requester_information(
             message_type,
@@ -726,16 +756,30 @@ async def enqueue_downloads(numbers, message_type, group_id, user_id, data):
         if str(number) in banned_id:
             await send_message(message_type, group_id, user_id, "❌ 禁止下载或用户被封禁")
             continue
+
+        if is_recent_request(scope_key, number):
+            await send_message(
+                message_type,
+                group_id,
+                user_id,
+                f"⏳ 本子 {number} 在过去12小时内已请求过，已跳过"
+            )
+            continue
+
         await jm_task_queue.put({
             "number": number,
             "message_type": message_type,
             "group_id": group_id,
             "user_id": user_id,
         })
-        enqueued_numbers.append(number)
-
-    if len(enqueued_numbers) > 1:
-        await send_message(message_type, group_id, user_id, f"⏳ 正在下载{len(enqueued_numbers)}个本子")
+        mark_request(scope_key, number)
+        queue_size = jm_task_queue.qsize()
+        await send_message(
+            message_type,
+            group_id,
+            user_id,
+            f"✅ 本子 {number} 已加入队列，当前队列：{queue_size}"
+        )
 
 async def jm_task_worker():
     while True:
