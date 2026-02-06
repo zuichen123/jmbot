@@ -189,8 +189,12 @@ def build_zip_for_pdf(pdf_path: str):
             pass
         return None
 
+def strip_cq_codes(message: str) -> str:
+    return re.sub(r"\[CQ:[^\]]*\]", "", message)
+
 def extract_jm_numbers(message: str) -> list[str]:
-    return re.findall(r"\d+", message)
+    cleaned_message = strip_cq_codes(message)
+    return re.findall(r"\d+", cleaned_message)
 
 # ================ 信息发送类 (已升级支持 Token) ================
 class NapcatWebSocketBot:
