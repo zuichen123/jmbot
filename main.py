@@ -5,6 +5,8 @@ import os
 import re
 import uvicorn
 import jmcomic
+from jmcomic import JmcomicText
+from difflib import SequenceMatcher
 from fastapi import FastAPI, Request
 import gc
 import asyncio
@@ -68,6 +70,9 @@ regex_enabled_group: dict = _config.get("regex_enabled_group", {})
 # ====================== 去重配置 ======================
 DEDUP_WINDOW_SECONDS = 12 * 60 * 60
 recent_requests: dict[str, dict[str, float]] = {}
+
+# ====================== 搜索状态配置 ======================
+search_pending: dict[str, dict] = {} # scope -> {jm_id: str, title: str, time: float}
 
 # ====================== 日志系统配置 ======================
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -566,6 +571,36 @@ def find_file_by_name(title):
         return file_path, file_name
     return None, None
 
+# ====================== 搜索逻辑 ======================
+def similarity_score(query: str, title: str) -> float:
+    return SequenceMatcher(None, query.lower(), title.lower()).ratio()
+
+def search_jm_impl(keyword: str):
+    try:
+        # Step 1: Search by keyword
+        page = client.search_site(search_query=keyword, page=1)
+        results = []
+        for album_id, title in page.iter_id_title():
+            jm_id = JmcomicText.parse_to_jm_id(album_id)
+            score = similarity_score(keyword, title)
+            results.append((jm_id, title, score))
+        
+        if not results:
+            return None
+            
+        # Sort by score desc
+        results.sort(key=lambda x: -x[2])
+        best_id, best_title, best_score = results[0]
+        
+        # Step 2: Get details
+        # Using search_site with ID to get full album info including tags
+        detail_page = client.search_site(search_query=str(best_id))
+        return getattr(detail_page, "single_album", None)
+        
+    except Exception as e:
+        log("[❌ Search]", f"搜索失败: {e}", "error")
+        return None
+
 # ====================== 主要命令处理 ======================
 async def process_jm_command(number, message_type, group_id, user_id):
     title = " "
@@ -719,11 +754,12 @@ def get_help_message():
         "📖 使用说明：\n"
         "1) /jm <ID>：下载并发送本子\n"
         "2) /jm look <ID>：查看本子信息\n"
-        "3) /jm mode pdf|zip：设置发送格式（群聊设置群专用，私聊设置全局）\n"
-        "4) /jm enc on|off：设置是否加密（群聊设置群专用，私聊设置全局）\n"
-        "5) /jm passwd <密码>：设置加密密码（群聊设置群专用，私聊设置全局）\n"
-        "6) /jm regex on|off：设置正则模式（群聊设置群专用，私聊设置全局）\n"
-        "7) /jm help：查看帮助\n\n"
+        "3) /jm search <本子名>：搜索本子并下载（需确认）\n"
+        "4) /jm mode pdf|zip：设置发送格式（群聊设置群专用，私聊设置全局）\n"
+        "5) /jm enc on|off：设置是否加密（群聊设置群专用，私聊设置全局）\n"
+        "6) /jm passwd <密码>：设置加密密码（群聊设置群专用，私聊设置全局）\n"
+        "7) /jm regex on|off：设置正则模式（群聊设置群专用，私聊设置全局）\n"
+        "8) /jm help：查看帮助\n\n"
         "🔧 管理命令（仅管理员）：\n"
         "• /jm on：开启禁漫功能\n"
         "• /jm off：关闭禁漫功能\n"
@@ -823,6 +859,7 @@ async def handle_message_event(data):
     match_DELBAN = re.match(r"^/jm\s+delban\s+(\d+)$", raw_message)
     match_MDE = re.match(r"^/jm\s+setmax\s+(\d+)$", raw_message)
     match_JML = re.match(r"^/jm\s+look\s+(\d+)$", raw_message)
+    match_SEARCH = re.match(r"^/jm\s+search\s+(.+)$", raw_message)
 
     if match_HELP:
         await send_message(message_type, group_id, user_id, get_help_message())
@@ -945,6 +982,54 @@ async def handle_message_event(data):
             await send_message(message_type, group_id, user_id, info)
         else:
             await send_message(message_type, group_id, user_id, "❌ 禁漫功能未开启")
+        return
+
+    if match_SEARCH:
+        keyword = match_SEARCH.group(1).strip()
+        scope_key = get_request_scope(message_type, group_id, user_id)
+        
+        if str(group_id) in banned_group and message_type == "group":
+            await send_message(message_type, group_id, user_id, "❌ 禁漫功能未开启")
+            return
+
+        await send_message(message_type, group_id, user_id, f"🔍 正在搜索：{keyword} ...")
+        
+        album = await asyncio.to_thread(search_jm_impl, keyword)
+        if album:
+            # Store pending
+            search_pending[scope_key] = {
+                "jm_id": album.album_id,
+                "title": album.title,
+                "time": time.time()
+            }
+            
+            tags_str = ', '.join(album.tags) if hasattr(album, 'tags') else "无"
+            msg = (
+                f"✅ 找到最佳匹配：\n"
+                f"🆔 JM{album.album_id}\n"
+                f"📖 标题：{album.title}\n"
+                f"🏷 标签：{tags_str}\n"
+                f"❓ 是否下载？请在10分钟内回复“确认”"
+            )
+            await send_message(message_type, group_id, user_id, msg)
+        else:
+            await send_message(message_type, group_id, user_id, "❌ 未找到相关本子")
+        return
+
+    # Check confirmation
+    if raw_message == "确认":
+        scope_key = get_request_scope(message_type, group_id, user_id)
+        pending = search_pending.get(scope_key)
+        if pending:
+            if time.time() - pending["time"] < 600: # 10 mins
+                jm_id = pending["jm_id"]
+                title = pending["title"]
+                del search_pending[scope_key]
+                await send_message(message_type, group_id, user_id, f"✅ 已确认，开始处理本子：{title}")
+                await enqueue_downloads([jm_id], message_type, group_id, user_id, data)
+            else:
+                # Expired
+                del search_pending[scope_key]
         return
 
     regex_enabled = get_regex_enabled(group_id if message_type == "group" else None)
