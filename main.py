@@ -508,7 +508,7 @@ def find_file_by_name(title):
 async def process_jm_command(number, message_type, group_id, user_id):
     title = " "
     try:
-        page = client.search_site(search_query=str(number))
+        page = await asyncio.to_thread(client.search_site, search_query=str(number))
         album = page.single_album
         title = album.title
         if not title:
@@ -525,7 +525,7 @@ async def process_jm_command(number, message_type, group_id, user_id):
             success = True
         else:
             await send_message(message_type, group_id, user_id, f"⏳ 正在下载本子 {number}")
-            success = jm_download(number)
+            success = await asyncio.to_thread(jm_download, number)
     except Exception as e:
         log("[❌ JM]", f"本子 {number} 下载失败 {e}")
         return "❌ 未能成功下载（可能ID错误或网络失败）"
@@ -589,7 +589,7 @@ async def process_jm_command(number, message_type, group_id, user_id):
 async def look_jm_information(number):
     try:
         log("[⭕ JM]", f"正在检索本子{number}信息")
-        page = client.search_site(search_query=str(number))
+        page = await asyncio.to_thread(client.search_site, search_query=str(number))
         album = page.single_album
         log("[🟢 JM]", f"本子{number}信息检索成功")
         return (
