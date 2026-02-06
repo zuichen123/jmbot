@@ -286,6 +286,9 @@ def extract_jm_numbers_from_event(data) -> list[str]:
     raw_message = data.get("raw_message", "")
     return extract_jm_numbers(raw_message)
 
+def is_short_number(number: str | int) -> bool:
+    return len(str(number)) < 4
+
 # ================ 信息发送类 (已升级支持 Token) ================
 class NapcatWebSocketBot:
     def __init__(self, websocket_url, token=None):
@@ -507,9 +510,15 @@ def find_file_by_name(title):
 # ====================== 主要命令处理 ======================
 async def process_jm_command(number, message_type, group_id, user_id):
     title = " "
+    short_number = is_short_number(number)
     try:
         page = await asyncio.to_thread(client.search_site, search_query=str(number))
-        album = page.single_album
+        album = getattr(page, "single_album", None)
+        if not album:
+            if short_number:
+                return None
+            log("[🚫 JM]", "未找到本子信息")
+            return "❌ 未能成功下载（可能ID错误或网络失败）"
         title = album.title
         if not title:
             log("[🚫 JM]", "本子标题为空，无法下载")
@@ -528,6 +537,8 @@ async def process_jm_command(number, message_type, group_id, user_id):
             success = await asyncio.to_thread(jm_download, number)
     except Exception as e:
         log("[❌ JM]", f"本子 {number} 下载失败 {e}")
+        if short_number:
+            return None
         return "❌ 未能成功下载（可能ID错误或网络失败）"
 
     if success:
@@ -705,7 +716,8 @@ async def jm_task_worker():
                 task["group_id"],
                 task["user_id"]
             )
-            await send_message(task["message_type"], task["group_id"], task["user_id"], response)
+            if response is not None:
+                await send_message(task["message_type"], task["group_id"], task["user_id"], response)
         except Exception as e:
             log("[❌ JM]", f"队列任务处理失败: {e}", "error")
         finally:
