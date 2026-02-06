@@ -689,17 +689,18 @@ def get_help_message():
     return (
         "📖 使用说明：\n"
         "1) /jm <ID>：下载并发送本子\n"
-        "2) /jm-look <ID>：查看本子信息\n"
+        "2) /jm look <ID>：查看本子信息\n"
         "3) /jm mode pdf|zip：设置发送格式（群聊设置群专用，私聊设置全局）\n"
         "4) /jm enc on|off：设置是否加密（群聊设置群专用，私聊设置全局）\n"
         "5) /jm passwd <密码>：设置加密密码（群聊设置群专用，私聊设置全局）\n"
         "6) /jm regex on|off：设置正则模式（群聊设置群专用，私聊设置全局）\n"
         "7) /jm help：查看帮助\n\n"
         "🔧 管理命令（仅管理员）：\n"
-        "• 开启禁漫功能 / 关闭禁漫功能\n"
-        "• /jm-addban <ID>：封禁本子\n"
-        "• /jm-delban <ID>：解封本子\n"
-        "• /jm-setmax <num>：设置最大章节数\n"
+        "• /jm on：开启禁漫功能\n"
+        "• /jm off：关闭禁漫功能\n"
+        "• /jm addban <ID>：封禁本子\n"
+        "• /jm delban <ID>：解封本子\n"
+        "• /jm setmax <num>：设置最大章节数\n"
     )
 
 async def enqueue_downloads(numbers, message_type, group_id, user_id, data):
@@ -772,12 +773,12 @@ async def handle_message_event(data):
     match_ENC = re.match(r"^/jm\s+enc\s+(on|off)$", raw_message)
     match_REGEX = re.match(r"^/jm\s+regex\s+(on|off)$", raw_message)
     match_PASSWD = re.match(r"^/jm\s+passwd\s+(.+)$", raw_message)
-    match_ON = re.match(r"开启禁漫功能", raw_message)
-    match_OFF = re.match(r"关闭禁漫功能", raw_message)
-    match_ADDBAN = re.match(r"^/jm-addban\s+(\d+)$", raw_message)
-    match_DELBAN = re.match(r"^/jm-delban\s+(\d+)$", raw_message)
-    match_MDE = re.match(r"^/jm-setmax\s+(\d+)$", raw_message)
-    match_JML = re.match(r"^/jm-look\s+(\d+)$", raw_message)
+    match_ON = re.match(r"^/jm\s+on$", raw_message)
+    match_OFF = re.match(r"^/jm\s+off$", raw_message)
+    match_ADDBAN = re.match(r"^/jm\s+addban\s+(\d+)$", raw_message)
+    match_DELBAN = re.match(r"^/jm\s+delban\s+(\d+)$", raw_message)
+    match_MDE = re.match(r"^/jm\s+setmax\s+(\d+)$", raw_message)
+    match_JML = re.match(r"^/jm\s+look\s+(\d+)$", raw_message)
 
     if match_HELP:
         await send_message(message_type, group_id, user_id, get_help_message())
