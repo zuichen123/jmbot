@@ -175,16 +175,19 @@ def build_zip_for_pdf(pdf_path: str):
     if not os.path.exists(pdf_path):
         return None
     base_name = os.path.splitext(os.path.basename(pdf_path))[0]
-    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-    temp_zip.close()
+    temp_dir = tempfile.gettempdir()
+    zip_path = os.path.join(temp_dir, f"{base_name}.zip")
+    if os.path.exists(zip_path):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_path = os.path.join(temp_dir, f"{base_name}_{timestamp}.zip")
     try:
-        with zipfile.ZipFile(temp_zip.name, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.write(pdf_path, arcname=f"{base_name}.pdf")
-        return temp_zip.name
+        return zip_path
     except Exception as e:
         log("[❌ ZIP]", f"压缩失败: {e}", "error")
         try:
-            os.remove(temp_zip.name)
+            os.remove(zip_path)
         except Exception:
             pass
         return None
