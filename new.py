@@ -272,6 +272,20 @@ def extract_jm_numbers(message: str) -> list[str]:
     cleaned_message = strip_cq_codes(message)
     return re.findall(r"\d+", cleaned_message)
 
+def extract_jm_numbers_from_event(data) -> list[str]:
+    message = data.get("message")
+    if isinstance(message, list):
+        text_parts = []
+        for segment in message:
+            if segment.get("type") == "text":
+                text_parts.append(segment.get("data", {}).get("text", ""))
+        combined_text = "".join(text_parts)
+        return re.findall(r"\d+", combined_text)
+    if isinstance(message, str):
+        return extract_jm_numbers(message)
+    raw_message = data.get("raw_message", "")
+    return extract_jm_numbers(raw_message)
+
 # ================ 信息发送类 (已升级支持 Token) ================
 class NapcatWebSocketBot:
     def __init__(self, websocket_url, token=None):
@@ -829,7 +843,7 @@ async def handle_message_event(data):
             await send_message(message_type, group_id, user_id, "❌ 禁漫功能未开启")
         return
 
-    numbers = extract_jm_numbers(raw_message)
+    numbers = extract_jm_numbers_from_event(data)
     if numbers:
         await enqueue_downloads(numbers, message_type, group_id, user_id, data)
 
