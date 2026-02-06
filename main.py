@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import zipfile
 from PyPDF2 import PdfReader, PdfWriter
+import html
 
 # ====================== 基础配置 (已适配 NapCat Docker版) ======================
 app = FastAPI()
@@ -352,6 +353,15 @@ def is_recent_request(scope_key: str, number: str | int) -> bool:
 
 def mark_request(scope_key: str, number: str | int):
     recent_requests.setdefault(scope_key, {})[str(number)] = time.time()
+
+def normalize_search_keyword(keyword: str) -> str:
+    cleaned = html.unescape(keyword).strip()
+    while True:
+        updated = re.sub(r'^\s*(?:\([^\)]*\)|\[[^\]]*\])\s*', "", cleaned)
+        if updated == cleaned:
+            break
+        cleaned = updated.strip()
+    return cleaned
 
 # ================ 信息发送类 (已升级支持 Token) ================
 class NapcatWebSocketBot:
@@ -986,6 +996,7 @@ async def handle_message_event(data):
 
     if match_SEARCH:
         keyword = match_SEARCH.group(1).strip()
+        keyword = normalize_search_keyword(keyword)
         scope_key = get_request_scope(message_type, group_id, user_id)
         
         if str(group_id) in banned_group and message_type == "group":
