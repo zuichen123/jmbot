@@ -14,10 +14,19 @@ max_episodes: 20
 send_mode_global: pdf
 send_mode_group:
     '609976107': pdf
+    '992833511': pdf
 enc_enabled_global: false
-enc_enabled_group: {}
+enc_enabled_group:
+    '609976107': false
+    '992833511': true
+    '838187768': true
+    '741048265': true
 enc_password_global: ''
-enc_password_group: {}
+enc_password_group:
+    '609976107': '114514'
+    '992833511': '114514'
+    '838187768': '350234'
+    '741048265': '123456'
 banned_id: []
 banned_user: []
 banned_group: []
