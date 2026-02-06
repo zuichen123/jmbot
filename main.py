@@ -859,7 +859,7 @@ async def handle_message_event(data):
     match_DELBAN = re.match(r"^/jm\s+delban\s+(\d+)$", raw_message)
     match_MDE = re.match(r"^/jm\s+setmax\s+(\d+)$", raw_message)
     match_JML = re.match(r"^/jm\s+look\s+(\d+)$", raw_message)
-    match_SEARCH = re.match(r"^/jm\s+search\s+(.+)$", raw_message)
+    match_SEARCH = re.match(r"^/jm\s+search\s+(.+)$", raw_message, flags=re.DOTALL)
 
     if match_HELP:
         await send_message(message_type, group_id, user_id, get_help_message())
