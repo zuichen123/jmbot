@@ -633,9 +633,7 @@ async def flush_forward_buffer(scope_key: str, force: bool = False):
     user_id = buffer.get("user_id")
 
     while items and (force or len(items) >= FORWARD_BATCH_SIZE):
-        batch_size = FORWARD_BATCH_SIZE if len(items) >= FORWARD_BATCH_SIZE else len(items)
-        if batch_size % 2 != 0:
-            batch_size -= 1
+        batch_size = min(len(items), FORWARD_BATCH_SIZE)
         if batch_size <= 0:
             break
         batch = items[:batch_size]
@@ -704,38 +702,68 @@ class NapcatWebSocketBot:
             if resp_data.get("echo") == expected_echo:
                 return resp_data
 
-    async def send_private_message(self, user_id, message):
+    def _extract_message_id(self, resp_data):
+        if not resp_data:
+            return None
+        data = resp_data.get("data")
+        if isinstance(data, dict):
+            return data.get("message_id")
+        if isinstance(data, int):
+            return data
+        return resp_data.get("message_id")
+
+    async def _send_message_payload(self, action, params, message, echo, timeout=10):
         payload = {
-            "action": "send_private_msg",
+            "action": action,
             "params": {
-                "user_id": user_id,
-                "message": [{"type": "text", "data": {"text": message}}],
+                **params,
+                "message": message,
             },
-            "echo": f"private_text_{user_id}",
+            "echo": echo,
         }
         try:
-            # ✅ 这里的 extra_headers 需要 websockets >= 10.0
             async with websockets.connect(self.websocket_url, extra_headers=self.headers) as websocket:
                 await websocket.send(json.dumps(payload))
-                await self._recv_until_echo(websocket, payload["echo"])
+                resp_data = await self._recv_until_echo(websocket, payload["echo"], timeout=timeout)
+                if not resp_data:
+                    log("[❌ message_sender]", "发送消息失败: 未收到响应", "error")
+                    return None
+                if resp_data.get("status") == "ok":
+                    return self._extract_message_id(resp_data)
+                log("[❌ message_sender]", f"发送消息失败: {resp_data}")
+                return None
         except Exception as e:
-            log("[❌ message_sender]", f"发送私聊文本消息失败: {e}")
+            log("[❌ message_sender]", f"发送消息失败: {e}")
+            return None
+
+    async def send_private_message(self, user_id, message):
+        echo = f"private_text_{user_id}_{int(time.time())}"
+        return await self._send_message_payload(
+            "send_private_msg",
+            {"user_id": user_id},
+            [{"type": "text", "data": {"text": message}}],
+            echo,
+        )
 
     async def send_group_message(self, group_id, message):
-        payload = {
-            "action": "send_group_msg",
-            "params": {
-                "group_id": group_id,
-                "message": [{"type": "text", "data": {"text": message}}],
-            },
-            "echo": f"group_text_{group_id}",
-        }
-        try:
-            async with websockets.connect(self.websocket_url, extra_headers=self.headers) as websocket:
-                await websocket.send(json.dumps(payload))
-                await self._recv_until_echo(websocket, payload["echo"])
-        except Exception as e:
-            log("[❌ message_sender]", f"发送群文本消息失败: {e}")
+        echo = f"group_text_{group_id}_{int(time.time())}"
+        return await self._send_message_payload(
+            "send_group_msg",
+            {"group_id": group_id},
+            [{"type": "text", "data": {"text": message}}],
+            echo,
+        )
+
+    async def send_group_message_segments(self, group_id, segments, echo=None):
+        if echo is None:
+            echo = f"group_segments_{group_id}_{int(time.time() * 1000)}"
+        return await self._send_message_payload(
+            "send_group_msg",
+            {"group_id": group_id},
+            segments,
+            echo,
+            timeout=FILE_SEND_TIMEOUT_SECONDS,
+        )
 
     def _is_rich_media_transfer_failed(self, resp_data):
         if not resp_data:
@@ -751,7 +779,7 @@ class NapcatWebSocketBot:
             remote_file_path = scp_file_to_remote(safe_path)
             if not remote_file_path:
                 log("[❌ message_sender]", "文件上传失败，无法发送")
-                return False, None
+                return False, None, None
         finally:
             if cleanup_local:
                 try:
@@ -780,18 +808,18 @@ class NapcatWebSocketBot:
 
                 if not resp_data:
                     log("[❌ message_sender]", "发送文件失败: 未收到响应", "error")
-                    return False, None
+                    return False, None, None
                 if resp_data.get("status") == "ok":
-                    return True, resp_data
+                    return True, resp_data, self._extract_message_id(resp_data)
                 log("[❌ message_sender]", f"发送文件失败: {resp_data}")
-                return False, resp_data
+                return False, resp_data, None
         except Exception as e:
             log("[❌ message_sender]", f"发送文件失败: {e}")
             delete_remote_file(remote_file_path)
-            return False, None
+            return False, None, None
 
     async def send_private_file(self, user_id, file_path):
-        success, resp_data = await self._send_file_payload(
+        success, resp_data, _ = await self._send_file_payload(
             "send_private_msg",
             {"user_id": user_id},
             file_path,
@@ -801,7 +829,7 @@ class NapcatWebSocketBot:
 
         if not success and self._is_rich_media_transfer_failed(resp_data):
             log("[⚠️ message_sender]", "富媒体发送失败，尝试使用安全文件名重试", "warning")
-            success, resp_data = await self._send_file_payload(
+            success, resp_data, _ = await self._send_file_payload(
                 "send_private_msg",
                 {"user_id": user_id},
                 file_path,
@@ -816,7 +844,7 @@ class NapcatWebSocketBot:
         return False
 
     async def send_group_file(self, group_id, file_path):
-        success, resp_data = await self._send_file_payload(
+        success, resp_data, _ = await self._send_file_payload(
             "send_group_msg",
             {"group_id": group_id},
             file_path,
@@ -826,7 +854,7 @@ class NapcatWebSocketBot:
 
         if not success and self._is_rich_media_transfer_failed(resp_data):
             log("[⚠️ message_sender]", "富媒体发送失败，尝试使用安全文件名重试", "warning")
-            success, resp_data = await self._send_file_payload(
+            success, resp_data, _ = await self._send_file_payload(
                 "send_group_msg",
                 {"group_id": group_id},
                 file_path,
@@ -840,15 +868,40 @@ class NapcatWebSocketBot:
 
         return False
 
+    async def _stage_nodes_for_forward(self, nodes, staging_group_id):
+        message_ids = []
+        for idx, node in enumerate(nodes):
+            content = node.get("data", {}).get("content")
+            if not content:
+                log("[❌ message_sender]", "合并转发预发送失败: 节点内容为空", "error")
+                return None
+            echo = f"stage_{staging_group_id}_{int(time.time() * 1000)}_{idx}"
+            message_id = await self.send_group_message_segments(staging_group_id, content, echo=echo)
+            if not message_id:
+                log("[❌ message_sender]", "合并转发预发送失败: 未获取 message_id", "error")
+                return None
+            message_ids.append(message_id)
+        return message_ids
+
     async def _send_forward_payload(self, action, params, nodes, echo):
+        if len(nodes) > FORWARD_BATCH_SIZE:
+            nodes = nodes[:FORWARD_BATCH_SIZE]
+
+        message_ids = await self._stage_nodes_for_forward(nodes, REDIRECT_GROUP_ID)
+        if not message_ids:
+            log("[❌ message_sender]", "合并转发失败: 预发送未完成", "error")
+            return False
+
+        forward_nodes = [{"type": "node", "data": {"id": message_id}} for message_id in message_ids]
+
         payload = {
             "action": action,
             "params": {
                 **params,
-                "message": nodes,
-                "news": [{"text": f"{len(nodes)}个文件"}],
+                "message": forward_nodes,
+                "news": [{"text": f"{len(forward_nodes)}个文件"}],
                 "prompt": "[文件合集]",
-                "summary": f"查看{len(nodes)}个文件",
+                "summary": f"查看{len(forward_nodes)}个文件",
                 "source": "文件收集助手",
             },
             "echo": echo,
