@@ -746,6 +746,23 @@ class NapcatWebSocketBot:
             log("[❌ message_sender]", f"发送消息失败 action={action} params={params} error={e}")
             return None
 
+    async def _send_forward_failure_notice(self, params, failed_count: int):
+        text = f"⚠️ {failed_count} items failed to stage and were skipped in merged forwarding."
+        if "group_id" in params:
+            await self._send_message_payload(
+                "send_group_msg",
+                {"group_id": params["group_id"]},
+                [{"type": "text", "data": {"text": text}}],
+                f"group_forward_notice_{params['group_id']}_{int(time.time())}",
+            )
+        elif "user_id" in params:
+            await self._send_message_payload(
+                "send_private_msg",
+                {"user_id": params["user_id"]},
+                [{"type": "text", "data": {"text": text}}],
+                f"private_forward_notice_{params['user_id']}_{int(time.time())}",
+            )
+
     async def send_private_message(self, user_id, message):
         echo = f"private_text_{user_id}_{int(time.time())}"
         return await self._send_message_payload(
@@ -881,24 +898,30 @@ class NapcatWebSocketBot:
 
     async def _stage_nodes_for_forward(self, nodes, staging_group_id):
         message_ids = []
+        failed_count = 0
         for idx, node in enumerate(nodes):
             content = node.get("data", {}).get("content")
             if not content:
                 log("[❌ message_sender]", "合并转发预发送失败: 节点内容为空", "error")
-                return None
+                failed_count += 1
+                continue
             echo = f"stage_{staging_group_id}_{int(time.time() * 1000)}_{idx}"
             message_id = await self.send_group_message_segments(staging_group_id, content, echo=echo)
             if not message_id:
                 log("[❌ message_sender]", "合并转发预发送失败: 未获取 message_id", "error")
-                return None
+                failed_count += 1
+                continue
             message_ids.append(message_id)
-        return message_ids
+        return message_ids, failed_count
 
     async def _send_forward_payload(self, action, params, nodes, echo):
         if len(nodes) > FORWARD_BATCH_SIZE:
             nodes = nodes[:FORWARD_BATCH_SIZE]
 
-        message_ids = await self._stage_nodes_for_forward(nodes, REDIRECT_GROUP_ID)
+        message_ids, failed_count = await self._stage_nodes_for_forward(nodes, REDIRECT_GROUP_ID)
+        if failed_count > 0:
+            await self._send_forward_failure_notice(params, failed_count)
+
         if not message_ids:
             log("[❌ message_sender]", "合并转发失败: 预发送未完成", "error")
             return False
