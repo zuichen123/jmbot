@@ -33,4 +33,4 @@ plugins:
     - plugin: img2pdf
       kwargs:
         pdf_dir: ./pdf/ # pdf存放文件夹
-        filename_rule: Aname # pdf命名规则，A代表album, name代表使用album.name也就是本子名
+        filename_rule: Aid # pdf命名规则，Aid代表使用album.id，避免过长文件名

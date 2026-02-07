@@ -614,12 +614,28 @@ def jm_download(number):
     gc.collect()
     return success
 
-def find_file_by_name(title):
-    safe_title = title.replace("?", "_").replace("/", "_").replace('"', "_")
-    file_name = f"{safe_title}.pdf"
-    file_path = os.path.join(FILE_DIR, file_name)
-    if os.path.exists(file_path):
-        return file_path, file_name
+def find_file_by_number(number, title=None):
+    candidates = []
+    if number is not None:
+        num_str = str(number)
+        candidates.extend([f"{num_str}.pdf", f"JM{num_str}.pdf"])
+    if title:
+        safe_title = title.replace("?", "_").replace("/", "_").replace('"', "_")
+        candidates.append(f"{safe_title}.pdf")
+
+    for file_name in candidates:
+        file_path = os.path.join(FILE_DIR, file_name)
+        if os.path.exists(file_path):
+            return file_path, file_name
+
+    if number is not None and os.path.isdir(FILE_DIR):
+        num_str = str(number)
+        for file_name in os.listdir(FILE_DIR):
+            if file_name.lower().endswith(".pdf") and num_str in file_name:
+                file_path = os.path.join(FILE_DIR, file_name)
+                if os.path.exists(file_path):
+                    return file_path, file_name
+
     return None, None
 
 # ====================== 搜索逻辑 ======================
@@ -672,7 +688,7 @@ async def process_jm_command(number, message_type, group_id, user_id):
             log("[🚫 JM]", "本子章节太多，不支持下载")
             return f"❌ 本子章节过多(>{get_download_max_epiosdes()})"
 
-        file_path, file_name = find_file_by_name(title)
+        file_path, file_name = find_file_by_number(number, title)
         if file_path:
             log("[✅ JM]", f"本地已存在该本子{number}：{file_name}")
             await send_message(message_type, group_id, user_id, f"📘 本地已存在本子 {number}")
@@ -687,7 +703,7 @@ async def process_jm_command(number, message_type, group_id, user_id):
         return "❌ 未能成功下载（可能ID错误或网络失败）"
 
     if success:
-        file_path, file_name = find_file_by_name(title)
+        file_path, file_name = find_file_by_number(number, title)
         if not file_path:
             log("[❌ JM]", f"下载本子{number}：{file_name}完成，但未找到PDF文件")
             return "❌ 下载完成但未找到PDF文件"
