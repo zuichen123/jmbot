@@ -44,7 +44,7 @@ FILE_SEND_TIMEOUT_SECONDS = 120
 # ====================== 转发重定向配置 ======================
 REDIRECT_GROUP_ID = 1083663846
 REDIRECT_THRESHOLD = 10
-FORWARD_BATCH_SIZE = 99
+FORWARD_BATCH_SIZE = 80
 
 # ====================== 关键路径配置 (Docker 适配) ======================
 # SCP 目标地址：这是宿主机上的实际路径 (NapCat 的 config 目录)
