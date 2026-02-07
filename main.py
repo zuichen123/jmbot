@@ -23,6 +23,7 @@ import zipfile
 from PyPDF2 import PdfReader, PdfWriter
 import html
 import shutil
+import hashlib
 
 # ====================== 基础配置 (已适配 NapCat Docker版) ======================
 app = FastAPI()
@@ -118,6 +119,41 @@ def get_total_memory_mb():
 def update_config():
     with open("config.yml", "w", encoding="utf-8") as f:
         yaml.dump(_config, f, allow_unicode=True, sort_keys=False, indent=4)
+
+def is_filename_too_long_error(err: Exception) -> bool:
+    if isinstance(err, OSError) and getattr(err, "errno", None) == 36:
+        return True
+    return "File name too long" in str(err)
+
+def get_fs_name_max(path: str) -> int:
+    try:
+        return os.pathconf(path, "PC_NAME_MAX")
+    except (AttributeError, ValueError, OSError):
+        return 255
+
+def trim_to_max_bytes(name: str, max_len: int) -> str:
+    if max_len <= 0:
+        return name
+    while len(name.encode("utf-8")) > max_len and name:
+        name = name[:-1]
+    return name
+
+def shorten_filename(original_name: str, max_len: int) -> str:
+    stem, ext = os.path.splitext(original_name)
+    safe_stem = sanitize_filename_component(stem)
+    safe_ext = sanitize_filename_component(ext.lstrip("."))
+    ext_part = f".{safe_ext}" if safe_ext else ""
+    hash_suffix = hashlib.md5(original_name.encode("utf-8")).hexdigest()[:8]
+
+    base_max = max_len - len(ext_part)
+    if base_max <= len(hash_suffix) + 1:
+        minimal = trim_to_max_bytes(hash_suffix, max_len - len(ext_part))
+        return trim_to_max_bytes(f"{minimal}{ext_part}", max_len)
+
+    prefix_len = base_max - len(hash_suffix) - 1
+    prefix = trim_to_max_bytes(safe_stem, prefix_len)
+    result = f"{prefix}_{hash_suffix}{ext_part}"
+    return trim_to_max_bytes(result, max_len)
 
 def scp_file_to_remote(local_file_path, remote_temp_filename=None):
     if not os.path.exists(local_file_path):
@@ -259,24 +295,32 @@ def sanitize_pdf_title(title: str) -> str:
 
 def sanitize_filename_for_transfer(filename: str) -> str:
     stem, ext = os.path.splitext(filename)
-    safe_stem = re.sub(r'[^A-Za-z0-9._-]+', "_", stem).strip("._-")
-    if not safe_stem:
-        safe_stem = "file"
-    ext_clean = re.sub(r'[^A-Za-z0-9]+', "", ext.lstrip("."))
-    safe_ext = f".{ext_clean}" if ext_clean else ""
-    return f"{safe_stem}{safe_ext}"
+    safe_stem = sanitize_filename_component(stem)
+    safe_ext = sanitize_filename_component(ext.lstrip("."))
+    if safe_ext:
+        return f"{safe_stem}.{safe_ext}"
+    return safe_stem
 
 def prepare_file_for_scp(file_path: str) -> tuple[str, bool]:
     base_name = os.path.basename(file_path)
-    safe_name = sanitize_filename_for_transfer(base_name)
-    if safe_name == base_name:
+    temp_dir = tempfile.gettempdir()
+    name_max = get_fs_name_max(temp_dir)
+
+    if len(base_name.encode("utf-8")) <= name_max:
         return file_path, False
 
-    temp_dir = tempfile.gettempdir()
+    safe_name = shorten_filename(base_name, name_max)
+    safe_name = sanitize_filename_for_transfer(safe_name)
+    safe_name = trim_to_max_bytes(safe_name, name_max)
+
     safe_path = os.path.join(temp_dir, safe_name)
     if os.path.exists(safe_path):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_path = os.path.join(temp_dir, f"{os.path.splitext(safe_name)[0]}_{timestamp}{os.path.splitext(safe_name)[1]}")
+        safe_path = os.path.join(
+            temp_dir,
+            f"{os.path.splitext(safe_name)[0]}_{timestamp}{os.path.splitext(safe_name)[1]}"
+        )
+
     shutil.copyfile(file_path, safe_path)
     return safe_path, True
 
@@ -286,10 +330,17 @@ def build_encrypted_pdf(pdf_path: str, password: str):
     base_name = os.path.splitext(os.path.basename(pdf_path))[0]
     safe_password = sanitize_filename_component(password) or "password"
     temp_dir = tempfile.gettempdir()
-    enc_path = os.path.join(temp_dir, f"{base_name}_{safe_password}.pdf")
+    name_max = get_fs_name_max(temp_dir)
+
+    file_name = f"{base_name}_{safe_password}.pdf"
+    if len(file_name.encode("utf-8")) > name_max:
+        file_name = shorten_filename(file_name, name_max)
+    enc_path = os.path.join(temp_dir, file_name)
+
     if os.path.exists(enc_path):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        enc_path = os.path.join(temp_dir, f"{base_name}_{safe_password}_{timestamp}.pdf")
+        enc_path = os.path.join(temp_dir, f"{os.path.splitext(file_name)[0]}_{timestamp}{os.path.splitext(file_name)[1]}")
+
     try:
         reader = PdfReader(pdf_path)
         writer = PdfWriter()
@@ -300,9 +351,25 @@ def build_encrypted_pdf(pdf_path: str, password: str):
             writer.write(f)
         return enc_path
     except Exception as e:
-        log("[❌ PDF]", f"加密失败: {e}", "error")
+        if is_filename_too_long_error(e):
+            try:
+                file_name = shorten_filename(os.path.basename(file_name), name_max)
+                enc_path = os.path.join(temp_dir, file_name)
+                reader = PdfReader(pdf_path)
+                writer = PdfWriter()
+                for page in reader.pages:
+                    writer.add_page(page)
+                writer.encrypt(password)
+                with open(enc_path, "wb") as f:
+                    writer.write(f)
+                return enc_path
+            except Exception as retry_error:
+                log("[❌ PDF]", f"加密失败: {retry_error}", "error")
+        else:
+            log("[❌ PDF]", f"加密失败: {e}", "error")
         try:
-            os.remove(enc_path)
+            if os.path.exists(enc_path):
+                os.remove(enc_path)
         except Exception:
             pass
         return None
@@ -311,19 +378,39 @@ def build_zip_for_file(file_path: str, zip_base_name: str):
     if not os.path.exists(file_path):
         return None
     temp_dir = tempfile.gettempdir()
+    name_max = get_fs_name_max(temp_dir)
+
     safe_zip_base_name = sanitize_filename_for_transfer(zip_base_name)
-    zip_path = os.path.join(temp_dir, f"{safe_zip_base_name}.zip")
+    zip_file_name = f"{safe_zip_base_name}.zip"
+    if len(zip_file_name.encode("utf-8")) > name_max:
+        zip_file_name = shorten_filename(zip_file_name, name_max)
+
+    zip_path = os.path.join(temp_dir, zip_file_name)
     if os.path.exists(zip_path):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        zip_path = os.path.join(temp_dir, f"{safe_zip_base_name}_{timestamp}.zip")
+        zip_path = os.path.join(
+            temp_dir,
+            f"{os.path.splitext(zip_file_name)[0]}_{timestamp}{os.path.splitext(zip_file_name)[1]}"
+        )
     try:
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.write(file_path, arcname=os.path.basename(file_path))
         return zip_path
     except Exception as e:
-        log("[❌ ZIP]", f"压缩失败: {e}", "error")
+        if is_filename_too_long_error(e):
+            try:
+                zip_file_name = shorten_filename(os.path.basename(zip_file_name), name_max)
+                zip_path = os.path.join(temp_dir, zip_file_name)
+                with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    zf.write(file_path, arcname=os.path.basename(file_path))
+                return zip_path
+            except Exception as retry_error:
+                log("[❌ ZIP]", f"压缩失败: {retry_error}", "error")
+        else:
+            log("[❌ ZIP]", f"压缩失败: {e}", "error")
         try:
-            os.remove(zip_path)
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
         except Exception:
             pass
         return None
@@ -426,8 +513,11 @@ def rename_pdf_after_download(number: str | int, title: str | None):
         os.rename(source_path, desired_path)
         return desired_path
     except OSError as e:
-        if e.errno != 36:
+        if is_filename_too_long_error(e):
+            log("[⚠️ JM]", f"文件名过长，降级命名: {e}", "warning")
+        else:
             log("[⚠️ JM]", f"重命名失败: {e}", "warning")
+            return source_path
 
     fallback_path = os.path.join(FILE_DIR, f"JM{number}.pdf")
     if os.path.abspath(source_path) == os.path.abspath(fallback_path):
