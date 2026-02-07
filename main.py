@@ -1012,6 +1012,8 @@ async def enqueue_downloads(numbers, message_type, group_id, user_id, data):
         return
 
     scope_key = get_request_scope(message_type, group_id, user_id)
+    is_batch = len(numbers) > 1
+    queued_count = 0
 
     for number in numbers:
         requester_information(
@@ -1043,12 +1045,24 @@ async def enqueue_downloads(numbers, message_type, group_id, user_id, data):
             "user_id": user_id,
         })
         mark_request(scope_key, number)
+        queued_count += 1
+
+        if not is_batch:
+            queue_size = jm_task_queue.qsize()
+            await send_message(
+                message_type,
+                group_id,
+                user_id,
+                f"✅ 本子 {number} 已加入队列，当前队列：{queue_size}"
+            )
+
+    if is_batch and queued_count > 0:
         queue_size = jm_task_queue.qsize()
         await send_message(
             message_type,
             group_id,
             user_id,
-            f"✅ 本子 {number} 已加入队列，当前队列：{queue_size}"
+            f"✅ 已加入队列，正在下载 {queued_count} 个本子，当前队列：{queue_size}"
         )
 
 async def jm_task_worker():
