@@ -22,6 +22,7 @@ import tempfile
 import zipfile
 from PyPDF2 import PdfReader, PdfWriter
 import html
+import shutil
 
 # ====================== 基础配置 (已适配 NapCat Docker版) ======================
 app = FastAPI()
@@ -249,6 +250,29 @@ def sanitize_filename_component(value: str) -> str:
     sanitized = re.sub(r'[\\/:*?"<>|]+', "_", value)
     return sanitized.strip()
 
+def sanitize_filename_for_transfer(filename: str) -> str:
+    stem, ext = os.path.splitext(filename)
+    safe_stem = re.sub(r'[^A-Za-z0-9._-]+', "_", stem).strip("._-")
+    if not safe_stem:
+        safe_stem = "file"
+    ext_clean = re.sub(r'[^A-Za-z0-9]+', "", ext.lstrip("."))
+    safe_ext = f".{ext_clean}" if ext_clean else ""
+    return f"{safe_stem}{safe_ext}"
+
+def prepare_file_for_scp(file_path: str) -> tuple[str, bool]:
+    base_name = os.path.basename(file_path)
+    safe_name = sanitize_filename_for_transfer(base_name)
+    if safe_name == base_name:
+        return file_path, False
+
+    temp_dir = tempfile.gettempdir()
+    safe_path = os.path.join(temp_dir, safe_name)
+    if os.path.exists(safe_path):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_path = os.path.join(temp_dir, f"{os.path.splitext(safe_name)[0]}_{timestamp}{os.path.splitext(safe_name)[1]}")
+    shutil.copyfile(file_path, safe_path)
+    return safe_path, True
+
 def build_encrypted_pdf(pdf_path: str, password: str):
     if not os.path.exists(pdf_path):
         return None
@@ -280,10 +304,11 @@ def build_zip_for_file(file_path: str, zip_base_name: str):
     if not os.path.exists(file_path):
         return None
     temp_dir = tempfile.gettempdir()
-    zip_path = os.path.join(temp_dir, f"{zip_base_name}.zip")
+    safe_zip_base_name = sanitize_filename_for_transfer(zip_base_name)
+    zip_path = os.path.join(temp_dir, f"{safe_zip_base_name}.zip")
     if os.path.exists(zip_path):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        zip_path = os.path.join(temp_dir, f"{zip_base_name}_{timestamp}.zip")
+        zip_path = os.path.join(temp_dir, f"{safe_zip_base_name}_{timestamp}.zip")
     try:
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.write(file_path, arcname=os.path.basename(file_path))
@@ -425,11 +450,19 @@ class NapcatWebSocketBot:
             log("[❌ message_sender]", f"发送群文本消息失败: {e}")
 
     async def send_private_file(self, user_id, file_path):
-        # 1. 上传到宿主机目录
-        remote_file_path = scp_file_to_remote(file_path)
-        if not remote_file_path:
-            log("[❌ message_sender]", "文件上传失败，无法发送")
-            return False
+        safe_path, cleanup_local = prepare_file_for_scp(file_path)
+        try:
+            # 1. 上传到宿主机目录
+            remote_file_path = scp_file_to_remote(safe_path)
+            if not remote_file_path:
+                log("[❌ message_sender]", "文件上传失败，无法发送")
+                return False
+        finally:
+            if cleanup_local:
+                try:
+                    os.remove(safe_path)
+                except Exception:
+                    pass
 
         # 2. ✅ 路径转换：宿主机路径 -> Docker 内部路径
         file_name = os.path.basename(remote_file_path)
@@ -467,11 +500,19 @@ class NapcatWebSocketBot:
             return False
 
     async def send_group_file(self, group_id, file_path):
-        # 1. 上传
-        remote_file_path = scp_file_to_remote(file_path)
-        if not remote_file_path:
-            log("[❌ message_sender]", "文件上传失败，无法发送")
-            return False
+        safe_path, cleanup_local = prepare_file_for_scp(file_path)
+        try:
+            # 1. 上传
+            remote_file_path = scp_file_to_remote(safe_path)
+            if not remote_file_path:
+                log("[❌ message_sender]", "文件上传失败，无法发送")
+                return False
+        finally:
+            if cleanup_local:
+                try:
+                    os.remove(safe_path)
+                except Exception:
+                    pass
 
         # 2. ✅ 路径转换
         file_name = os.path.basename(remote_file_path)
