@@ -301,16 +301,30 @@ def sanitize_filename_for_transfer(filename: str) -> str:
         return f"{safe_stem}.{safe_ext}"
     return safe_stem
 
-def prepare_file_for_scp(file_path: str) -> tuple[str, bool]:
+def sanitize_filename_for_transfer_strict(filename: str) -> str:
+    stem, ext = os.path.splitext(filename)
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._")
+    if not safe_stem:
+        safe_stem = "file"
+    safe_ext = re.sub(r"[^A-Za-z0-9]+", "", ext.lstrip("."))
+    if safe_ext:
+        return f"{safe_stem}.{safe_ext}"
+    return safe_stem
+
+def prepare_file_for_scp(file_path: str, force_safe: bool = False) -> tuple[str, bool]:
     base_name = os.path.basename(file_path)
     temp_dir = tempfile.gettempdir()
     name_max = get_fs_name_max(temp_dir)
 
-    if len(base_name.encode("utf-8")) <= name_max:
+    if not force_safe and len(base_name.encode("utf-8")) <= name_max:
         return file_path, False
 
-    safe_name = shorten_filename(base_name, name_max)
-    safe_name = sanitize_filename_for_transfer(safe_name)
+    if force_safe:
+        safe_name = sanitize_filename_for_transfer_strict(base_name)
+    else:
+        safe_name = shorten_filename(base_name, name_max)
+        safe_name = sanitize_filename_for_transfer(safe_name)
+
     safe_name = trim_to_max_bytes(safe_name, name_max)
 
     safe_path = os.path.join(temp_dir, safe_name)
@@ -593,14 +607,21 @@ class NapcatWebSocketBot:
         except Exception as e:
             log("[❌ message_sender]", f"发送群文本消息失败: {e}")
 
-    async def send_private_file(self, user_id, file_path):
-        safe_path, cleanup_local = prepare_file_for_scp(file_path)
+    def _is_rich_media_transfer_failed(self, resp_data):
+        if not resp_data:
+            return False
+        if resp_data.get("retcode") == 1200:
+            return True
+        message = (resp_data.get("message") or resp_data.get("wording") or "").lower()
+        return "rich media transfer failed" in message
+
+    async def _send_file_payload(self, action, params, file_path, echo, force_safe=False):
+        safe_path, cleanup_local = prepare_file_for_scp(file_path, force_safe=force_safe)
         try:
-            # 1. 上传到宿主机目录
             remote_file_path = scp_file_to_remote(safe_path)
             if not remote_file_path:
                 log("[❌ message_sender]", "文件上传失败，无法发送")
-                return False
+                return False, None
         finally:
             if cleanup_local:
                 try:
@@ -608,90 +629,86 @@ class NapcatWebSocketBot:
                 except Exception:
                     pass
 
-        # 2. ✅ 路径转换：宿主机路径 -> Docker 内部路径
         file_name = os.path.basename(remote_file_path)
         docker_file_path = os.path.join(DOCKER_INTERNAL_PATH, file_name)
         file_url = f"file://{docker_file_path}"
 
         payload = {
-            "action": "send_private_msg",
+            "action": action,
             "params": {
-                "user_id": user_id,
+                **params,
                 "message": [{"type": "file", "data": {"file": file_url}}],
             },
-            "echo": f"private_file_{user_id}",
+            "echo": echo,
         }
         try:
             async with websockets.connect(self.websocket_url, extra_headers=self.headers) as websocket:
                 await websocket.send(json.dumps(payload))
                 resp_data = await self._recv_until_echo(websocket, payload["echo"], timeout=FILE_SEND_TIMEOUT_SECONDS)
-                
-                # 发送后清理
+
                 delete_remote_file(remote_file_path)
-                
+
                 if not resp_data:
-                    log("[❌ message_sender]", "发送私聊文件失败: 未收到响应", "error")
-                    return False
+                    log("[❌ message_sender]", "发送文件失败: 未收到响应", "error")
+                    return False, None
                 if resp_data.get("status") == "ok":
-                    log("[✅ message_sender]", "私聊本子发送成功")
-                    return True
-                else:
-                    log("[❌ message_sender]", f"发送私聊文件失败: {resp_data}")
-                    return False
+                    return True, resp_data
+                log("[❌ message_sender]", f"发送文件失败: {resp_data}")
+                return False, resp_data
         except Exception as e:
-            log("[❌ message_sender]", f"发送私聊文件失败: {e}")
+            log("[❌ message_sender]", f"发送文件失败: {e}")
             delete_remote_file(remote_file_path)
-            return False
+            return False, None
+
+    async def send_private_file(self, user_id, file_path):
+        success, resp_data = await self._send_file_payload(
+            "send_private_msg",
+            {"user_id": user_id},
+            file_path,
+            f"private_file_{user_id}",
+            force_safe=False,
+        )
+
+        if not success and self._is_rich_media_transfer_failed(resp_data):
+            log("[⚠️ message_sender]", "富媒体发送失败，尝试使用安全文件名重试", "warning")
+            success, resp_data = await self._send_file_payload(
+                "send_private_msg",
+                {"user_id": user_id},
+                file_path,
+                f"private_file_{user_id}_safe",
+                force_safe=True,
+            )
+
+        if success:
+            log("[✅ message_sender]", "私聊本子发送成功")
+            return True
+
+        return False
 
     async def send_group_file(self, group_id, file_path):
-        safe_path, cleanup_local = prepare_file_for_scp(file_path)
-        try:
-            # 1. 上传
-            remote_file_path = scp_file_to_remote(safe_path)
-            if not remote_file_path:
-                log("[❌ message_sender]", "文件上传失败，无法发送")
-                return False
-        finally:
-            if cleanup_local:
-                try:
-                    os.remove(safe_path)
-                except Exception:
-                    pass
+        success, resp_data = await self._send_file_payload(
+            "send_group_msg",
+            {"group_id": group_id},
+            file_path,
+            f"group_file_{group_id}",
+            force_safe=False,
+        )
 
-        # 2. ✅ 路径转换
-        file_name = os.path.basename(remote_file_path)
-        docker_file_path = os.path.join(DOCKER_INTERNAL_PATH, file_name)
-        file_url = f"file://{docker_file_path}"
+        if not success and self._is_rich_media_transfer_failed(resp_data):
+            log("[⚠️ message_sender]", "富媒体发送失败，尝试使用安全文件名重试", "warning")
+            success, resp_data = await self._send_file_payload(
+                "send_group_msg",
+                {"group_id": group_id},
+                file_path,
+                f"group_file_{group_id}_safe",
+                force_safe=True,
+            )
 
-        payload = {
-            "action": "send_group_msg",
-            "params": {
-                "group_id": group_id,
-                "message": [{"type": "file", "data": {"file": file_url}}],
-            },
-            "echo": f"group_file_{group_id}",
-        }
-        try:
-            async with websockets.connect(self.websocket_url, extra_headers=self.headers) as websocket:
-                await websocket.send(json.dumps(payload))
-                resp_data = await self._recv_until_echo(websocket, payload["echo"], timeout=FILE_SEND_TIMEOUT_SECONDS)
-                
-                # 发送后清理
-                delete_remote_file(remote_file_path)
+        if success:
+            log("[✅ message_sender]", "群聊本子发送成功")
+            return True
 
-                if not resp_data:
-                    log("[❌ message_sender]", "发送群文件失败: 未收到响应", "error")
-                    return False
-                if resp_data.get("status") == "ok":
-                    log("[✅ message_sender]", "群聊本子发送成功")
-                    return True
-                else:
-                    log("[❌ message_sender]", f"发送群文件失败: {resp_data}")
-                    return True # 保持原逻辑返回 True
-        except Exception as e:
-            log("[❌ message_sender]", f"发送群文件失败: {e}")
-            delete_remote_file(remote_file_path)
-            return False
+        return False
 
 # ====================== 全局状态管理 (传入 Token) ======================
 bot = NapcatWebSocketBot(WEBSOCKET_URL, token=WEBSOCKET_TOKEN)
