@@ -11,6 +11,17 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 
+DEFAULT_WS_URL = "ws://10.0.0.101:13001"
+DEFAULT_TOKEN = "1"
+DEFAULT_REDIRECT_GROUP_ID = 1083663846
+DEFAULT_TARGET_GROUP_ID = 609976107
+DEFAULT_REMOTE_USER = "zuichen"
+DEFAULT_REMOTE_HOST = "10.0.0.101"
+DEFAULT_REMOTE_TEMP_DIR = "/home/zuichen/Server/Napcat2/.config/QQ/temp/"
+DEFAULT_DOCKER_TEMP_DIR = "/app/.config/QQ/temp/"
+DEFAULT_SSH_KEY = "/home/zuichen/.ssh/id_rsa"
+
+
 def build_logger():
     logging.basicConfig(
         level=logging.INFO,
@@ -255,19 +266,19 @@ async def run_test(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Test merged forward staging and forwarding.")
-    parser.add_argument("--ws-url", default=os.getenv("NAPCAT_WS_URL", "ws://10.0.0.101:13001"))
-    parser.add_argument("--token", default=os.getenv("NAPCAT_WS_TOKEN"))
-    parser.add_argument("--redirect-group-id", type=int, required=True)
-    parser.add_argument("--target-group-id", type=int, required=True)
+    parser.add_argument("--ws-url", default=os.getenv("NAPCAT_WS_URL", DEFAULT_WS_URL))
+    parser.add_argument("--token", default=os.getenv("NAPCAT_WS_TOKEN", DEFAULT_TOKEN))
+    parser.add_argument("--redirect-group-id", type=int, default=DEFAULT_REDIRECT_GROUP_ID)
+    parser.add_argument("--target-group-id", type=int, default=DEFAULT_TARGET_GROUP_ID)
     parser.add_argument("--text", default="Forward test message")
     parser.add_argument("--file-path", default=None)
     parser.add_argument("--timeout", type=int, default=60)
     parser.add_argument("--retries", type=int, default=3)
-    parser.add_argument("--remote-user", default=os.getenv("NAPCAT_REMOTE_USER", "zuichen"))
-    parser.add_argument("--remote-host", default=os.getenv("NAPCAT_REMOTE_HOST", "10.0.0.101"))
-    parser.add_argument("--remote-temp-dir", default=os.getenv("NAPCAT_REMOTE_TEMP_DIR", "/home/zuichen/Server/Napcat2/.config/QQ/temp/"))
-    parser.add_argument("--docker-temp-dir", default=os.getenv("NAPCAT_DOCKER_TEMP_DIR", "/app/.config/QQ/temp/"))
-    parser.add_argument("--ssh-key", default=os.getenv("NAPCAT_SSH_KEY", "/home/zuichen/.ssh/id_rsa"))
+    parser.add_argument("--remote-user", default=os.getenv("NAPCAT_REMOTE_USER", DEFAULT_REMOTE_USER))
+    parser.add_argument("--remote-host", default=os.getenv("NAPCAT_REMOTE_HOST", DEFAULT_REMOTE_HOST))
+    parser.add_argument("--remote-temp-dir", default=os.getenv("NAPCAT_REMOTE_TEMP_DIR", DEFAULT_REMOTE_TEMP_DIR))
+    parser.add_argument("--docker-temp-dir", default=os.getenv("NAPCAT_DOCKER_TEMP_DIR", DEFAULT_DOCKER_TEMP_DIR))
+    parser.add_argument("--ssh-key", default=os.getenv("NAPCAT_SSH_KEY", DEFAULT_SSH_KEY))
     return parser.parse_args()
 
 
