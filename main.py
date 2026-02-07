@@ -41,6 +41,11 @@ LOG_DIR = "./logs"
 
 FILE_SEND_TIMEOUT_SECONDS = 120
 
+# ====================== 转发重定向配置 ======================
+REDIRECT_GROUP_ID = 1083663846
+REDIRECT_THRESHOLD = 10
+FORWARD_BATCH_SIZE = 99
+
 # ====================== 关键路径配置 (Docker 适配) ======================
 # SCP 目标地址：这是宿主机上的实际路径 (NapCat 的 config 目录)
 REMOTE_USER = "zuichen"
@@ -78,6 +83,10 @@ recent_requests: dict[str, dict[str, float]] = {}
 
 # ====================== 搜索状态配置 ======================
 search_pending: dict[str, dict] = {} # scope -> {jm_id: str, title: str, time: float}
+
+# ====================== 队列与转发状态 ======================
+pending_counts: dict[str, int] = {}
+forward_buffers: dict[str, dict] = {}
 
 # ====================== 日志系统配置 ======================
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -546,6 +555,103 @@ def rename_pdf_after_download(number: str | int, title: str | None):
         log("[⚠️ JM]", f"重命名失败: {e}", "warning")
         return source_path
 
+def increment_pending(scope_key: str, delta: int = 1):
+    pending_counts[scope_key] = pending_counts.get(scope_key, 0) + delta
+    if pending_counts[scope_key] <= 0:
+        pending_counts.pop(scope_key, None)
+
+def should_redirect(scope_key: str) -> bool:
+    return pending_counts.get(scope_key, 0) > REDIRECT_THRESHOLD
+
+def stage_file_for_forward(file_path: str) -> tuple[str | None, str | None, str | None]:
+    safe_path, cleanup_local = prepare_file_for_scp(file_path, force_safe=False)
+    try:
+        remote_file_path = scp_file_to_remote(safe_path)
+        if not remote_file_path:
+            return None, None, None
+    finally:
+        if cleanup_local:
+            try:
+                os.remove(safe_path)
+            except Exception:
+                pass
+
+    file_name = os.path.basename(remote_file_path)
+    docker_file_path = os.path.join(DOCKER_INTERNAL_PATH, file_name)
+    file_url = f"file://{docker_file_path}"
+    return remote_file_path, file_url, file_name
+
+def build_forward_node(file_url: str, display_name: str, uploader_id: int | str | None, uploader_name: str | None):
+    try:
+        user_id = int(uploader_id) if uploader_id is not None else 10000
+    except (ValueError, TypeError):
+        user_id = 10000
+    nickname = uploader_name or "文件助手"
+    return {
+        "type": "node",
+        "data": {
+            "user_id": user_id,
+            "nickname": nickname,
+            "content": [{
+                "type": "file",
+                "data": {
+                    "file": file_url,
+                    "name": display_name,
+                }
+            }]
+        }
+    }
+
+async def flush_forward_buffer(scope_key: str, force: bool = False):
+    buffer = forward_buffers.get(scope_key)
+    if not buffer:
+        return
+
+    items = buffer.get("items", [])
+    message_type = buffer.get("message_type")
+    group_id = buffer.get("group_id")
+    user_id = buffer.get("user_id")
+
+    while items and (force or len(items) >= FORWARD_BATCH_SIZE):
+        batch_size = FORWARD_BATCH_SIZE if len(items) >= FORWARD_BATCH_SIZE else len(items)
+        batch = items[:batch_size]
+        nodes = [item["node"] for item in batch]
+
+        if message_type == "group":
+            success = await bot.send_group_forward_message(group_id, nodes)
+        else:
+            success = await bot.send_private_forward_message(user_id, nodes)
+
+        if not success:
+            log("[❌ Forward]", f"合并转发失败，scope={scope_key}", "error")
+            break
+
+        for item in batch:
+            remote_file_path = item.get("remote_file_path")
+            if remote_file_path:
+                delete_remote_file(remote_file_path)
+
+        del items[:batch_size]
+
+    if not items:
+        forward_buffers.pop(scope_key, None)
+
+async def append_forward_buffer(scope_key: str, message_type: str, group_id: int | None, user_id: int | None, node: dict, remote_file_path: str):
+    if scope_key not in forward_buffers:
+        forward_buffers[scope_key] = {
+            "message_type": message_type,
+            "group_id": group_id,
+            "user_id": user_id,
+            "items": [],
+        }
+
+    forward_buffers[scope_key]["items"].append({
+        "node": node,
+        "remote_file_path": remote_file_path,
+    })
+
+    await flush_forward_buffer(scope_key, force=False)
+
 # ================ 信息发送类 (已升级支持 Token) ================
 class NapcatWebSocketBot:
     def __init__(self, websocket_url, token=None):
@@ -710,6 +816,50 @@ class NapcatWebSocketBot:
 
         return False
 
+    async def _send_forward_payload(self, action, params, nodes, echo):
+        payload = {
+            "action": action,
+            "params": {
+                **params,
+                "message": nodes,
+                "news": [{"text": f"{len(nodes)}个文件"}],
+                "prompt": "[文件合集]",
+                "summary": f"查看{len(nodes)}个文件",
+                "source": "文件收集助手",
+            },
+            "echo": echo,
+        }
+        try:
+            async with websockets.connect(self.websocket_url, extra_headers=self.headers) as websocket:
+                await websocket.send(json.dumps(payload))
+                resp_data = await self._recv_until_echo(websocket, payload["echo"])
+                if not resp_data:
+                    log("[❌ message_sender]", "合并转发失败: 未收到响应", "error")
+                    return False
+                if resp_data.get("status") == "ok":
+                    return True
+                log("[❌ message_sender]", f"合并转发失败: {resp_data}")
+                return False
+        except Exception as e:
+            log("[❌ message_sender]", f"合并转发失败: {e}")
+            return False
+
+    async def send_group_forward_message(self, group_id, nodes):
+        return await self._send_forward_payload(
+            "send_group_forward_msg",
+            {"group_id": group_id},
+            nodes,
+            f"group_forward_{group_id}_{int(time.time())}",
+        )
+
+    async def send_private_forward_message(self, user_id, nodes):
+        return await self._send_forward_payload(
+            "send_private_forward_msg",
+            {"user_id": user_id},
+            nodes,
+            f"private_forward_{user_id}_{int(time.time())}",
+        )
+
 # ====================== 全局状态管理 (传入 Token) ======================
 bot = NapcatWebSocketBot(WEBSOCKET_URL, token=WEBSOCKET_TOKEN)
 client = jmcomic.JmOption.default().new_jm_client()
@@ -830,7 +980,21 @@ def search_jm_impl(keyword: str):
         return None
 
 # ====================== 主要命令处理 ======================
-async def process_jm_command(number, message_type, group_id, user_id):
+async def send_redirected_file(scope_key, message_type, group_id, user_id, file_path, uploader_id, uploader_name):
+    send_to_redirect = await bot.send_group_file(REDIRECT_GROUP_ID, file_path)
+    if not send_to_redirect:
+        log("[⚠️ Redirect]", f"发送到重定向群失败，scope={scope_key}", "warning")
+
+    remote_file_path, file_url, display_name = stage_file_for_forward(file_path)
+    if not remote_file_path or not file_url:
+        log("[❌ Redirect]", f"转发文件准备失败，scope={scope_key}", "error")
+        return False
+
+    node = build_forward_node(file_url, display_name, uploader_id, uploader_name)
+    await append_forward_buffer(scope_key, message_type, group_id, user_id, node, remote_file_path)
+    return True
+
+async def process_jm_command(number, message_type, group_id, user_id, scope_key, uploader_id, uploader_name, redirect_enabled):
     title = " "
     short_number = is_short_number(number)
     try:
@@ -907,10 +1071,22 @@ async def process_jm_command(number, message_type, group_id, user_id):
         msg = f"✅ 天堂正在发送：\n车牌号：{number}\n本子名：{title}\n文件类型：{file_label}\n文件大小：({file_size:.2f}MB)"
         if enc_enabled and password:
             msg += f"\n密码：{password}"
-        if message_type == "group":
-            send_result = await bot.send_group_file(group_id, send_path)
+
+        if redirect_enabled:
+            send_result = await send_redirected_file(
+                scope_key,
+                message_type,
+                group_id,
+                user_id,
+                send_path,
+                uploader_id,
+                uploader_name
+            )
         else:
-            send_result = await bot.send_private_file(user_id, send_path)
+            if message_type == "group":
+                send_result = await bot.send_group_file(group_id, send_path)
+            else:
+                send_result = await bot.send_private_file(user_id, send_path)
 
         for temp_file in temp_files:
             try:
@@ -1019,7 +1195,7 @@ async def enqueue_downloads(numbers, message_type, group_id, user_id, data):
         requester_information(
             message_type,
             data.get('group_name'),
-            data.get('sender').get('nickname'),
+            data.get('sender').get('nickname') if data.get('sender') else None,
             group_id,
             user_id,
             number,
@@ -1043,8 +1219,12 @@ async def enqueue_downloads(numbers, message_type, group_id, user_id, data):
             "message_type": message_type,
             "group_id": group_id,
             "user_id": user_id,
+            "scope_key": scope_key,
+            "uploader_id": user_id,
+            "uploader_name": data.get("sender", {}).get("nickname") if data.get("sender") else None,
         })
         mark_request(scope_key, number)
+        increment_pending(scope_key, 1)
         queued_count += 1
 
         if not is_batch:
@@ -1068,13 +1248,19 @@ async def enqueue_downloads(numbers, message_type, group_id, user_id, data):
 async def jm_task_worker():
     while True:
         task = await jm_task_queue.get()
+        scope_key = task.get("scope_key")
         try:
             set_jm_running(True)
+            redirect_enabled = should_redirect(scope_key) if scope_key else False
             response = await process_jm_command(
                 task["number"],
                 task["message_type"],
                 task["group_id"],
-                task["user_id"]
+                task["user_id"],
+                scope_key,
+                task.get("uploader_id"),
+                task.get("uploader_name"),
+                redirect_enabled
             )
             if response is not None:
                 await send_message(task["message_type"], task["group_id"], task["user_id"], response)
@@ -1082,6 +1268,9 @@ async def jm_task_worker():
             log("[❌ JM]", f"队列任务处理失败: {e}", "error")
         finally:
             jm_task_queue.task_done()
+            if scope_key:
+                increment_pending(scope_key, -1)
+                await flush_forward_buffer(scope_key, force=pending_counts.get(scope_key, 0) == 0)
             if jm_task_queue.empty():
                 set_jm_running(False)
 
