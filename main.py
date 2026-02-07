@@ -38,6 +38,8 @@ WEBSOCKET_TOKEN = "1"  # ✅ 新增：Token 鉴权
 FILE_DIR = "./pdf/"
 LOG_DIR = "./logs"
 
+FILE_SEND_TIMEOUT_SECONDS = 120
+
 # ====================== 关键路径配置 (Docker 适配) ======================
 # SCP 目标地址：这是宿主机上的实际路径 (NapCat 的 config 目录)
 REMOTE_USER = "zuichen"
@@ -250,6 +252,11 @@ def sanitize_filename_component(value: str) -> str:
     sanitized = re.sub(r'[\\/:*?"<>|]+', "_", value)
     return sanitized.strip()
 
+def sanitize_pdf_title(title: str) -> str:
+    sanitized = re.sub(r'[\\/:*?"<>|]+', "_", title)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip().strip(".")
+    return sanitized
+
 def sanitize_filename_for_transfer(filename: str) -> str:
     stem, ext = os.path.splitext(filename)
     safe_stem = re.sub(r'[^A-Za-z0-9._-]+', "_", stem).strip("._-")
@@ -388,6 +395,53 @@ def normalize_search_keyword(keyword: str) -> str:
         cleaned = updated.strip()
     return cleaned
 
+def rename_pdf_after_download(number: str | int, title: str | None):
+    if number is None or not os.path.isdir(FILE_DIR):
+        return None
+
+    source_path = None
+    for name in (f"{number}.pdf", f"JM{number}.pdf"):
+        candidate = os.path.join(FILE_DIR, name)
+        if os.path.exists(candidate):
+            source_path = candidate
+            break
+
+    if not source_path:
+        return None
+
+    if not title:
+        return source_path
+
+    sanitized_title = sanitize_pdf_title(title)
+    if not sanitized_title:
+        return source_path
+
+    desired_path = os.path.join(FILE_DIR, f"{sanitized_title}.pdf")
+    if os.path.abspath(source_path) == os.path.abspath(desired_path):
+        return source_path
+    if os.path.exists(desired_path):
+        return desired_path
+
+    try:
+        os.rename(source_path, desired_path)
+        return desired_path
+    except OSError as e:
+        if e.errno != 36:
+            log("[⚠️ JM]", f"重命名失败: {e}", "warning")
+
+    fallback_path = os.path.join(FILE_DIR, f"JM{number}.pdf")
+    if os.path.abspath(source_path) == os.path.abspath(fallback_path):
+        return source_path
+    if os.path.exists(fallback_path):
+        return fallback_path
+
+    try:
+        os.rename(source_path, fallback_path)
+        return fallback_path
+    except OSError as e:
+        log("[⚠️ JM]", f"重命名失败: {e}", "warning")
+        return source_path
+
 # ================ 信息发送类 (已升级支持 Token) ================
 class NapcatWebSocketBot:
     def __init__(self, websocket_url, token=None):
@@ -480,7 +534,7 @@ class NapcatWebSocketBot:
         try:
             async with websockets.connect(self.websocket_url, extra_headers=self.headers) as websocket:
                 await websocket.send(json.dumps(payload))
-                resp_data = await self._recv_until_echo(websocket, payload["echo"])
+                resp_data = await self._recv_until_echo(websocket, payload["echo"], timeout=FILE_SEND_TIMEOUT_SECONDS)
                 
                 # 发送后清理
                 delete_remote_file(remote_file_path)
@@ -530,7 +584,7 @@ class NapcatWebSocketBot:
         try:
             async with websockets.connect(self.websocket_url, extra_headers=self.headers) as websocket:
                 await websocket.send(json.dumps(payload))
-                resp_data = await self._recv_until_echo(websocket, payload["echo"])
+                resp_data = await self._recv_until_echo(websocket, payload["echo"], timeout=FILE_SEND_TIMEOUT_SECONDS)
                 
                 # 发送后清理
                 delete_remote_file(remote_file_path)
@@ -620,7 +674,7 @@ def find_file_by_number(number, title=None):
         num_str = str(number)
         candidates.extend([f"{num_str}.pdf", f"JM{num_str}.pdf"])
     if title:
-        safe_title = title.replace("?", "_").replace("/", "_").replace('"', "_")
+        safe_title = sanitize_pdf_title(title)
         candidates.append(f"{safe_title}.pdf")
 
     for file_name in candidates:
@@ -703,7 +757,13 @@ async def process_jm_command(number, message_type, group_id, user_id):
         return "❌ 未能成功下载（可能ID错误或网络失败）"
 
     if success:
-        file_path, file_name = find_file_by_number(number, title)
+        renamed_path = rename_pdf_after_download(number, title)
+        if renamed_path:
+            file_path = renamed_path
+            file_name = os.path.basename(renamed_path)
+        else:
+            file_path, file_name = find_file_by_number(number, title)
+
         if not file_path:
             log("[❌ JM]", f"下载本子{number}：{file_name}完成，但未找到PDF文件")
             return "❌ 下载完成但未找到PDF文件"
