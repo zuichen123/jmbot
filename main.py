@@ -87,6 +87,7 @@ search_pending: dict[str, dict] = {} # scope -> {jm_id: str, title: str, time: f
 # ====================== 队列与转发状态 ======================
 pending_counts: dict[str, int] = {}
 forward_buffers: dict[str, dict] = {}
+redirect_scopes: set[str] = set()
 
 # ====================== 日志系统配置 ======================
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -570,7 +571,7 @@ def increment_pending(scope_key: str, delta: int = 1):
         pending_counts.pop(scope_key, None)
 
 def should_redirect(scope_key: str) -> bool:
-    return pending_counts.get(scope_key, 0) > REDIRECT_THRESHOLD
+    return scope_key in redirect_scopes
 
 def stage_file_for_forward(file_path: str) -> tuple[str | None, str | None, str | None]:
     safe_path, cleanup_local = prepare_file_for_scp(file_path, force_safe=False)
@@ -1311,6 +1312,12 @@ async def enqueue_downloads(numbers, message_type, group_id, user_id, data):
     is_batch = len(numbers) > 1
     queued_count = 0
 
+    current_pending = pending_counts.get(scope_key, 0)
+    if current_pending + len(numbers) > REDIRECT_THRESHOLD:
+        if scope_key not in redirect_scopes:
+            redirect_scopes.add(scope_key)
+            log("[🔁 Redirect]", f"触发重定向 scope={scope_key} target_group={REDIRECT_GROUP_ID}")
+
     for number in numbers:
         requester_information(
             message_type,
@@ -1348,6 +1355,10 @@ async def enqueue_downloads(numbers, message_type, group_id, user_id, data):
         increment_pending(scope_key, 1)
         queued_count += 1
 
+        if pending_counts.get(scope_key, 0) > REDIRECT_THRESHOLD and scope_key not in redirect_scopes:
+            redirect_scopes.add(scope_key)
+            log("[🔁 Redirect]", f"触发重定向 scope={scope_key} target_group={REDIRECT_GROUP_ID}")
+
         if not is_batch:
             queue_size = jm_task_queue.qsize()
             await send_message(
@@ -1373,8 +1384,6 @@ async def jm_task_worker():
         try:
             set_jm_running(True)
             redirect_enabled = should_redirect(scope_key) if scope_key else False
-            if redirect_enabled:
-                log("[🔁 Redirect]", f"触发重定向 scope={scope_key} target_group={REDIRECT_GROUP_ID}")
             response = await process_jm_command(
                 task["number"],
                 task["message_type"],
@@ -1394,6 +1403,9 @@ async def jm_task_worker():
             if scope_key:
                 increment_pending(scope_key, -1)
                 await flush_forward_buffer(scope_key, force=pending_counts.get(scope_key, 0) == 0)
+                if pending_counts.get(scope_key, 0) == 0 and scope_key in redirect_scopes:
+                    redirect_scopes.discard(scope_key)
+                    log("[🔁 Redirect]", f"重定向结束 scope={scope_key}")
             if jm_task_queue.empty():
                 set_jm_running(False)
 
