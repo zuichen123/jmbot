@@ -164,6 +164,15 @@ def shorten_filename(original_name: str, max_len: int) -> str:
     result = f"{prefix}_{hash_suffix}{ext_part}"
     return trim_to_max_bytes(result, max_len)
 
+def describe_file(file_path: str) -> str:
+    try:
+        if not file_path or not os.path.exists(file_path):
+            return f"path={file_path} exists=False"
+        size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        return f"path={file_path} exists=True size={size_mb:.2f}MB"
+    except Exception as e:
+        return f"path={file_path} info_error={e}"
+
 def scp_file_to_remote(local_file_path, remote_temp_filename=None):
     if not os.path.exists(local_file_path):
         log("[❌ SCP]", f"本地文件不存在：{local_file_path}", "error")
@@ -726,14 +735,14 @@ class NapcatWebSocketBot:
                 await websocket.send(json.dumps(payload))
                 resp_data = await self._recv_until_echo(websocket, payload["echo"], timeout=timeout)
                 if not resp_data:
-                    log("[❌ message_sender]", "发送消息失败: 未收到响应", "error")
+                    log("[❌ message_sender]", f"发送消息失败: 未收到响应 action={action} params={params}", "error")
                     return None
                 if resp_data.get("status") == "ok":
                     return self._extract_message_id(resp_data)
-                log("[❌ message_sender]", f"发送消息失败: {resp_data}")
+                log("[❌ message_sender]", f"发送消息失败 action={action} params={params} resp={resp_data}")
                 return None
         except Exception as e:
-            log("[❌ message_sender]", f"发送消息失败: {e}")
+            log("[❌ message_sender]", f"发送消息失败 action={action} params={params} error={e}")
             return None
 
     async def send_private_message(self, user_id, message):
@@ -774,11 +783,12 @@ class NapcatWebSocketBot:
         return "rich media transfer failed" in message
 
     async def _send_file_payload(self, action, params, file_path, echo, force_safe=False):
+        log("[📦 message_sender]", f"准备发送文件 action={action} params={params} {describe_file(file_path)}")
         safe_path, cleanup_local = prepare_file_for_scp(file_path, force_safe=force_safe)
         try:
             remote_file_path = scp_file_to_remote(safe_path)
             if not remote_file_path:
-                log("[❌ message_sender]", "文件上传失败，无法发送")
+                log("[❌ message_sender]", f"文件上传失败，无法发送 action={action} params={params} {describe_file(safe_path)}")
                 return False, None, None
         finally:
             if cleanup_local:
@@ -807,14 +817,14 @@ class NapcatWebSocketBot:
                 delete_remote_file(remote_file_path)
 
                 if not resp_data:
-                    log("[❌ message_sender]", "发送文件失败: 未收到响应", "error")
+                    log("[❌ message_sender]", f"发送文件失败: 未收到响应 action={action} params={params} file_url={file_url}", "error")
                     return False, None, None
                 if resp_data.get("status") == "ok":
                     return True, resp_data, self._extract_message_id(resp_data)
-                log("[❌ message_sender]", f"发送文件失败: {resp_data}")
+                log("[❌ message_sender]", f"发送文件失败 action={action} params={params} file_url={file_url} resp={resp_data}")
                 return False, resp_data, None
         except Exception as e:
-            log("[❌ message_sender]", f"发送文件失败: {e}")
+            log("[❌ message_sender]", f"发送文件失败 action={action} params={params} file_path={file_path} error={e}")
             delete_remote_file(remote_file_path)
             return False, None, None
 
@@ -1058,18 +1068,41 @@ def search_jm_impl(keyword: str):
 
 # ====================== 主要命令处理 ======================
 async def send_redirected_file(scope_key, message_type, group_id, user_id, file_path, uploader_id, uploader_name, info_message):
+    log(
+        "[🔁 Redirect]",
+        f"开始重定向 scope={scope_key} target_group={REDIRECT_GROUP_ID} source_group={group_id} user_id={user_id} {describe_file(file_path)}",
+    )
+
     info_sent = await bot.send_group_message(REDIRECT_GROUP_ID, info_message)
     if not info_sent:
-        log("[⚠️ Redirect]", f"发送本子信息到重定向群失败，scope={scope_key}", "warning")
+        log(
+            "[⚠️ Redirect]",
+            f"发送本子信息到重定向群失败 target_group={REDIRECT_GROUP_ID} scope={scope_key}",
+            "warning",
+        )
+    else:
+        log("[✅ Redirect]", f"信息已发送到重定向群 target_group={REDIRECT_GROUP_ID} message_id={info_sent}")
 
     send_to_redirect = await bot.send_group_file(REDIRECT_GROUP_ID, file_path)
     if not send_to_redirect:
-        log("[⚠️ Redirect]", f"发送到重定向群失败，scope={scope_key}", "warning")
+        log(
+            "[⚠️ Redirect]",
+            f"发送文件到重定向群失败 target_group={REDIRECT_GROUP_ID} scope={scope_key} {describe_file(file_path)}",
+            "warning",
+        )
+    else:
+        log("[✅ Redirect]", f"文件已发送到重定向群 target_group={REDIRECT_GROUP_ID}")
 
     remote_file_path, file_url, display_name = stage_file_for_forward(file_path)
     if not remote_file_path or not file_url:
-        log("[❌ Redirect]", f"转发文件准备失败，scope={scope_key}", "error")
+        log(
+            "[❌ Redirect]",
+            f"转发文件准备失败 scope={scope_key} target_group={REDIRECT_GROUP_ID} {describe_file(file_path)}",
+            "error",
+        )
         return False
+
+    log("[🔁 Redirect]", f"转发节点准备完成 scope={scope_key} remote={remote_file_path} url={file_url}")
 
     info_node = build_forward_text_node(info_message, uploader_id, uploader_name)
     file_node = build_forward_node(file_url, display_name, uploader_id, uploader_name)
@@ -1340,6 +1373,8 @@ async def jm_task_worker():
         try:
             set_jm_running(True)
             redirect_enabled = should_redirect(scope_key) if scope_key else False
+            if redirect_enabled:
+                log("[🔁 Redirect]", f"触发重定向 scope={scope_key} target_group={REDIRECT_GROUP_ID}")
             response = await process_jm_command(
                 task["number"],
                 task["message_type"],
