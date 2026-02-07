@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 
 def build_logger():
@@ -109,38 +110,93 @@ def delete_remote_file(remote_user: str, remote_host: str, remote_file_path: str
         return False
 
 
-async def send_group_msg(ws_url: str, token: str | None, group_id: int, message, echo: str, timeout: int):
+async def send_group_msg(ws_url: str, token: str | None, group_id: int, message, echo: str, timeout: int, retries: int):
     payload = {
         "action": "send_group_msg",
         "params": {"group_id": group_id, "message": message},
         "echo": echo,
     }
     headers = get_auth_headers(token)
-    async with websockets.connect(ws_url, extra_headers=headers) as websocket:
-        await websocket.send(json.dumps(payload))
-        resp_data = await recv_until_echo(websocket, echo, timeout)
-        return resp_data
+
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            async with websockets.connect(ws_url, extra_headers=headers) as websocket:
+                await websocket.send(json.dumps(payload))
+                resp_data = await recv_until_echo(websocket, echo, timeout)
+                return resp_data
+        except ConnectionClosed as e:
+            last_error = e
+            logger.error(
+                "WebSocket closed during send_group_msg (attempt %s/%s): code=%s reason=%s",
+                attempt,
+                retries,
+                getattr(e, "code", None),
+                getattr(e, "reason", None),
+            )
+        except Exception as e:
+            last_error = e
+            logger.error("send_group_msg failed (attempt %s/%s): %s", attempt, retries, e)
+
+        await asyncio.sleep(1)
+
+    if last_error:
+        raise last_error
+    return None
 
 
-async def send_group_forward_msg(ws_url: str, token: str | None, group_id: int, nodes, echo: str, timeout: int):
+async def send_group_forward_msg(ws_url: str, token: str | None, group_id: int, nodes, echo: str, timeout: int, retries: int):
     payload = {
         "action": "send_group_forward_msg",
         "params": {"group_id": group_id, "message": nodes},
         "echo": echo,
     }
     headers = get_auth_headers(token)
-    async with websockets.connect(ws_url, extra_headers=headers) as websocket:
-        await websocket.send(json.dumps(payload))
-        resp_data = await recv_until_echo(websocket, echo, timeout)
-        return resp_data
+
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            async with websockets.connect(ws_url, extra_headers=headers) as websocket:
+                await websocket.send(json.dumps(payload))
+                resp_data = await recv_until_echo(websocket, echo, timeout)
+                return resp_data
+        except ConnectionClosed as e:
+            last_error = e
+            logger.error(
+                "WebSocket closed during send_group_forward_msg (attempt %s/%s): code=%s reason=%s",
+                attempt,
+                retries,
+                getattr(e, "code", None),
+                getattr(e, "reason", None),
+            )
+        except Exception as e:
+            last_error = e
+            logger.error("send_group_forward_msg failed (attempt %s/%s): %s", attempt, retries, e)
+
+        await asyncio.sleep(1)
+
+    if last_error:
+        raise last_error
+    return None
 
 
 async def run_test(args):
+    if not args.token:
+        logger.warning("No token provided. If NapCat requires auth, set --token or NAPCAT_WS_TOKEN.")
+
     staged_ids = []
 
     text_content = [{"type": "text", "data": {"text": args.text}}]
     text_echo = f"stage_text_{args.redirect_group_id}_{int(time.time() * 1000)}"
-    text_resp = await send_group_msg(args.ws_url, args.token, args.redirect_group_id, text_content, text_echo, args.timeout)
+    text_resp = await send_group_msg(
+        args.ws_url,
+        args.token,
+        args.redirect_group_id,
+        text_content,
+        text_echo,
+        args.timeout,
+        args.retries,
+    )
     logger.info("Stage text response: %s", text_resp)
     text_id = extract_message_id(text_resp)
     if not text_id:
@@ -164,7 +220,15 @@ async def run_test(args):
         file_url = f"file://{os.path.join(args.docker_temp_dir, os.path.basename(remote_file_path))}"
         file_content = [{"type": "file", "data": {"file": file_url}}]
         file_echo = f"stage_file_{args.redirect_group_id}_{int(time.time() * 1000)}"
-        file_resp = await send_group_msg(args.ws_url, args.token, args.redirect_group_id, file_content, file_echo, args.timeout)
+        file_resp = await send_group_msg(
+            args.ws_url,
+            args.token,
+            args.redirect_group_id,
+            file_content,
+            file_echo,
+            args.timeout,
+            args.retries,
+        )
         logger.info("Stage file response: %s", file_resp)
         file_id = extract_message_id(file_resp)
         if not file_id:
@@ -181,6 +245,7 @@ async def run_test(args):
         forward_nodes,
         forward_echo,
         args.timeout,
+        args.retries,
     )
     logger.info("Forward response: %s", forward_resp)
 
@@ -197,6 +262,7 @@ def parse_args():
     parser.add_argument("--text", default="Forward test message")
     parser.add_argument("--file-path", default=None)
     parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--remote-user", default=os.getenv("NAPCAT_REMOTE_USER", "zuichen"))
     parser.add_argument("--remote-host", default=os.getenv("NAPCAT_REMOTE_HOST", "10.0.0.101"))
     parser.add_argument("--remote-temp-dir", default=os.getenv("NAPCAT_REMOTE_TEMP_DIR", "/home/zuichen/Server/Napcat2/.config/QQ/temp/"))
