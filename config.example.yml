@@ -1,12 +1,18 @@
 # 示例配置文件：首次运行会复制为 config.yml
 # 请根据实际环境修改以下配置
 admin_id: 100000001 # 管理员QQ号
+http_host: "0.0.0.0" # HTTP监听Host
 http_port: 8071 # HTTP监听端口
 websocket_url: ws://10.0.0.101:13001 # WebSocket地址
 websocket_token: '1' # WebSocket鉴权Token
 file_dir: ./pdf/ # PDF文件目录
 log_dir: ./logs # 日志目录
 file_send_timeout_seconds: 120 # 文件发送超时(秒)
+
+# JMComic 核心配置
+jm_option_path: ./option.yml # jmcomic option文件路径
+download_timeout: 1800 # 下载超时(秒)
+search_timeout: 600 # 搜索确认等待超时(秒)
 
 # 转发/重定向配置
 redirect_group_id: 100000002
@@ -26,6 +32,10 @@ random_password_length: 10
 dedup_window_seconds: 43200
 max_concurrent_downloads: 2
 max_episodes: 20
+
+# 系统资源配置
+memory_cleanup_interval: 300 # 内存清理/检查间隔(秒)
+memory_limit_mb: 600 # 内存限制(MB)，超过自动重启
 
 # 发送模式配置
 send_mode_global: pdf

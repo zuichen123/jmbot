@@ -45,6 +45,7 @@ with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 
 admin_id = int(_config.get("admin_id", 627585966))
 
+HTTP_HOST = _config.get("http_host", "0.0.0.0")
 HTTP_PORT = int(_config.get("http_port", 8071))
 WEBSOCKET_URL = _config.get("websocket_url", "ws://10.0.0.101:13001")
 WEBSOCKET_TOKEN = _config.get("websocket_token", "1")
@@ -53,6 +54,13 @@ FILE_DIR = _config.get("file_dir", "./pdf/")
 LOG_DIR = _config.get("log_dir", "./logs")
 
 FILE_SEND_TIMEOUT_SECONDS = int(_config.get("file_send_timeout_seconds", 120))
+
+# ====================== JMComic & 资源配置 ======================
+JM_OPTION_PATH = _config.get("jm_option_path", "./option.yml")
+DOWNLOAD_TIMEOUT = int(_config.get("download_timeout", 1800))
+SEARCH_TIMEOUT = int(_config.get("search_timeout", 600))
+MEMORY_CLEANUP_INTERVAL = int(_config.get("memory_cleanup_interval", 300))
+MEMORY_LIMIT_MB = int(_config.get("memory_limit_mb", 600))
 
 # ====================== 转发重定向配置 ======================
 REDIRECT_GROUP_ID = int(_config.get("redirect_group_id", 1083663846))
@@ -1143,10 +1151,10 @@ def get_download_max_epiosdes():
     return max_episodes
 
 # ====================== 下载逻辑 (保持不变) ======================
-def jm_download_worker(number, result_dict):
+def jm_download_worker(number, result_dict, option_path):
     try:
         log("[🟢 JM]", f"开始下载本子: {number}")
-        option = jmcomic.create_option_by_file('./option.yml')
+        option = jmcomic.create_option_by_file(option_path)
         jmcomic.download_album(number, option)
         result_dict["result"] = True
         log("[📦 JM]", f"本子 {number} 下载完成")
@@ -1157,10 +1165,11 @@ def jm_download_worker(number, result_dict):
 def jm_download(number):
     manager = multiprocessing.Manager()
     result_dict = manager.dict()
-    p = multiprocessing.Process(target=jm_download_worker, args=(number, result_dict))
+    # 传入配置中的 option 路径
+    p = multiprocessing.Process(target=jm_download_worker, args=(number, result_dict, JM_OPTION_PATH))
     p.start()
 
-    timeout = 1800
+    timeout = DOWNLOAD_TIMEOUT
     start_time = time.time()
     
     while p.is_alive():
@@ -1830,7 +1839,7 @@ async def handle_message_event(data):
         scope_key = get_request_scope(message_type, group_id, user_id)
         pending = search_pending.get(scope_key)
         if pending:
-            if time.time() - pending["time"] < 600: # 10 mins
+            if time.time() - pending["time"] < SEARCH_TIMEOUT:
                 jm_id = pending["jm_id"]
                 title = pending["title"]
                 del search_pending[scope_key]
@@ -1849,7 +1858,7 @@ async def handle_message_event(data):
 # ====================== 内存管理任务 ======================
 async def periodic_cleanup():
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(MEMORY_CLEANUP_INTERVAL)
         if hasattr(gc, "collect"):
             gc.collect()
         main_mem, child_mem = get_total_memory_mb()
@@ -1858,7 +1867,7 @@ async def periodic_cleanup():
         if get_jm_running():
             continue
 
-        if (main_mem + child_mem) > 600:
+        if (main_mem + child_mem) > MEMORY_LIMIT_MB:
             log("[⚠️ SYSTEM]", "内存超限，准备重启")
             sys.exit(0)
 
@@ -1867,7 +1876,7 @@ async def main():
     log("[🚀 SYSTEM]", "Napcat QQ机器人启动中...")
     log("[📁 SYSTEM]", f"文件目录: {os.path.abspath(FILE_DIR)}")
     log("[🌐 SYSTEM]", f"WebSocket服务器: {WEBSOCKET_URL}")
-    log("[🔗 SYSTEM]", f"HTTP监听端口: {HTTP_PORT}")
+    log("[🔗 SYSTEM]", f"HTTP监听: {HTTP_HOST}:{HTTP_PORT}")
     log("[🌍 REMOTE]", f"SCP目标: {REMOTE_USER}@{REMOTE_HOST}:{REMOTE_TEMP_DIR}")
     
     # 打印版本信息，方便排查
@@ -1876,7 +1885,7 @@ async def main():
     asyncio.create_task(periodic_cleanup())
     asyncio.create_task(jm_task_worker())
 
-    config = uvicorn.Config(app, host="0.0.0.0", port=HTTP_PORT, loop="asyncio", access_log=False)
+    config = uvicorn.Config(app, host=HTTP_HOST, port=HTTP_PORT, loop="asyncio", access_log=False)
     server = uvicorn.Server(config)
     await server.serve()
 
