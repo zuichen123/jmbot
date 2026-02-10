@@ -24,6 +24,8 @@ from PyPDF2 import PdfReader, PdfWriter
 import html
 import shutil
 import hashlib
+import secrets
+import string
 
 # ====================== 基础配置 (已适配 NapCat Docker版) ======================
 app = FastAPI()
@@ -57,6 +59,8 @@ LOCAL_SSH_KEY = "/home/zuichen/.ssh/id_rsa"
 # 宿主机的 .config/QQ 挂载到了容器的 /app/.config/QQ
 DOCKER_INTERNAL_PATH = "/app/.config/QQ/temp/"
 
+RANDOM_PASSWORD_LENGTH = 10
+
 # 读取配置文件
 with open("config.yml", "r", encoding="utf-8") as f:
     _config = yaml.safe_load(f)
@@ -73,6 +77,9 @@ enc_enabled_group: dict = _config.get("enc_enabled_group", {})
 
 enc_password_global: str = _config.get("enc_password_global", "")
 enc_password_group: dict = _config.get("enc_password_group", {})
+
+random_password_enabled_global: bool = bool(_config.get("random_password_enabled_global", False))
+random_password_enabled_group: dict = _config.get("random_password_enabled_group", {})
 
 regex_enabled_global: bool = bool(_config.get("regex_enabled_global", False))
 regex_enabled_group: dict = _config.get("regex_enabled_group", {})
@@ -267,6 +274,24 @@ def set_group_enc_enabled(group_id: int, enabled: bool):
     _config["enc_enabled_group"] = enc_enabled_group
     update_config()
 
+def get_random_password_enabled(group_id: int | None):
+    if group_id is not None:
+        group_enabled = random_password_enabled_group.get(str(group_id))
+        if isinstance(group_enabled, bool):
+            return group_enabled
+    return bool(random_password_enabled_global)
+
+def set_global_random_password_enabled(enabled: bool):
+    global random_password_enabled_global
+    random_password_enabled_global = enabled
+    _config["random_password_enabled_global"] = enabled
+    update_config()
+
+def set_group_random_password_enabled(group_id: int, enabled: bool):
+    random_password_enabled_group[str(group_id)] = enabled
+    _config["random_password_enabled_group"] = random_password_enabled_group
+    update_config()
+
 def get_enc_password(group_id: int | None):
     if group_id is not None:
         group_pwd = enc_password_group.get(str(group_id))
@@ -329,6 +354,10 @@ def sanitize_filename_for_transfer_strict(filename: str) -> str:
     if safe_ext:
         return f"{safe_stem}.{safe_ext}"
     return safe_stem
+
+def generate_random_password(length: int = RANDOM_PASSWORD_LENGTH) -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(max(4, length)))
 
 def prepare_file_for_scp(file_path: str, force_safe: bool = False) -> tuple[str, bool]:
     base_name = os.path.basename(file_path)
@@ -1184,7 +1213,8 @@ async def process_jm_command(number, message_type, group_id, user_id, scope_key,
 
         send_mode = get_send_mode(group_id if message_type == "group" else None)
         enc_enabled = get_enc_enabled(group_id if message_type == "group" else None)
-        password = get_enc_password(group_id if message_type == "group" else None)
+        random_password_enabled = get_random_password_enabled(group_id if message_type == "group" else None)
+        password = ""
 
         temp_files = []
         send_path = file_path
@@ -1192,6 +1222,11 @@ async def process_jm_command(number, message_type, group_id, user_id, scope_key,
         zip_base_name = base_name
 
         if enc_enabled:
+            if random_password_enabled:
+                password = generate_random_password()
+            else:
+                password = get_enc_password(group_id if message_type == "group" else None)
+
             if not password:
                 return "❌ 未设置加密密码，请先使用 /jm passwd <密码> 设置"
             enc_path = build_encrypted_pdf(file_path, password)
@@ -1312,8 +1347,9 @@ def get_help_message():
         "4) /jm mode pdf|zip：设置发送格式（群聊设置群专用，私聊设置全局）\n"
         "5) /jm enc on|off：设置是否加密（群聊设置群专用，私聊设置全局）\n"
         "6) /jm passwd <密码>：设置加密密码（群聊设置群专用，私聊设置全局）\n"
-        "7) /jm regex on|off：设置正则模式（群聊设置群专用，私聊设置全局）\n"
-        "8) /jm help：查看帮助\n\n"
+        "7) /jm randpwd on|off：启用随机密码加密（群聊设置群专用，私聊设置全局）\n"
+        "8) /jm regex on|off：设置正则模式（群聊设置群专用，私聊设置全局）\n"
+        "9) /jm help：查看帮助\n\n"
         "🔧 管理命令（仅管理员）：\n"
         "• /jm on：开启禁漫功能\n"
         "• /jm off：关闭禁漫功能\n"
@@ -1446,6 +1482,7 @@ async def handle_message_event(data):
     match_HELP = re.match(r"^/jm\s+help$", raw_message)
     match_MODE = re.match(r"^/jm\s+mode\s+(pdf|zip)$", raw_message)
     match_ENC = re.match(r"^/jm\s+enc\s+(on|off)$", raw_message)
+    match_RANDPWD = re.match(r"^/jm\s+randpwd\s+(on|off)$", raw_message)
     match_REGEX = re.match(r"^/jm\s+regex\s+(on|off)$", raw_message)
     match_PASSWD = re.match(r"^/jm\s+passwd\s+(.+)$", raw_message)
     match_ON = re.match(r"^/jm\s+on$", raw_message)
@@ -1486,6 +1523,21 @@ async def handle_message_event(data):
             set_global_enc_enabled(enabled)
             state = "开启" if enabled else "关闭"
             await send_message(message_type, group_id, user_id, f"✅ 全局加密已{state}")
+        return
+
+    if match_RANDPWD:
+        if user_id != admin_id:
+            await send_message(message_type, group_id, user_id, "❌ 仅管理员可设置随机密码开关")
+            return
+        enabled = match_RANDPWD.group(1) == "on"
+        if message_type == "group" and group_id:
+            set_group_random_password_enabled(group_id, enabled)
+            state = "开启" if enabled else "关闭"
+            await send_message(message_type, group_id, user_id, f"✅ 本群随机密码已{state}")
+        else:
+            set_global_random_password_enabled(enabled)
+            state = "开启" if enabled else "关闭"
+            await send_message(message_type, group_id, user_id, f"✅ 全局随机密码已{state}")
         return
 
     if match_REGEX:
