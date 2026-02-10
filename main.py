@@ -380,6 +380,12 @@ def generate_random_password(length: int = RANDOM_PASSWORD_LENGTH) -> str:
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(max(4, length)))
 
+def generate_random_jm_id() -> str:
+    length = secrets.randbelow(7) + 3
+    first_digit = secrets.choice("123456789")
+    remaining = "".join(secrets.choice("0123456789") for _ in range(length - 1))
+    return f"{first_digit}{remaining}"
+
 def prepare_send_file_with_name(file_path: str, desired_base_name: str) -> tuple[str, bool]:
     base_name = sanitize_filename_component(desired_base_name).strip()
     if not base_name:
@@ -1442,13 +1448,14 @@ def get_help_message():
         "1) /jm <ID>：下载并发送本子\n"
         "2) /jm look <ID>：查看本子信息\n"
         "3) /jm search <本子名>：搜索本子并下载（需确认）\n"
-        "4) /jm mode pdf|zip：设置发送格式（群聊设置群专用，私聊设置全局）\n"
-        "5) /jm enc on|off：设置是否加密（群聊设置群专用，私聊设置全局）\n"
-        "6) /jm passwd <密码>：设置加密密码（群聊设置群专用，私聊设置全局）\n"
-        "7) /jm randpwd on|off：启用随机密码加密（群聊设置群专用，私聊设置全局）\n"
-        "8) /jm fname jm|full：设置发送文件命名方式（群聊设置群专用，私聊设置全局）\n"
-        "9) /jm regex on|off：设置正则模式（群聊设置群专用，私聊设置全局）\n"
-        "10) /jm help：查看帮助\n\n"
+        "4) /jm goodluck | /goodluck | 随机本子：随机本子下载\n"
+        "5) /jm mode pdf|zip：设置发送格式（群聊设置群专用，私聊设置全局）\n"
+        "6) /jm enc on|off：设置是否加密（群聊设置群专用，私聊设置全局）\n"
+        "7) /jm passwd <密码>：设置加密密码（群聊设置群专用，私聊设置全局）\n"
+        "8) /jm randpwd on|off：启用随机密码加密（群聊设置群专用，私聊设置全局）\n"
+        "9) /jm fname jm|full：设置发送文件命名方式（群聊设置群专用，私聊设置全局）\n"
+        "10) /jm regex on|off：设置正则模式（群聊设置群专用，私聊设置全局）\n"
+        "11) /jm help：查看帮助\n\n"
         "🔧 管理命令（仅管理员）：\n"
         "• /jm on：开启禁漫功能\n"
         "• /jm off：关闭禁漫功能\n"
@@ -1592,6 +1599,9 @@ async def handle_message_event(data):
     match_MDE = re.match(r"^/jm\s+setmax\s+(\d+)$", raw_message)
     match_JML = re.match(r"^/jm\s+look\s+(\d+)$", raw_message)
     match_SEARCH = re.match(r"^/jm\s+search\s+(.+)$", raw_message, flags=re.DOTALL)
+    match_GOODLUCK = re.match(r"^/jm\s+goodluck$", raw_message)
+    match_GOODLUCK_ALT = re.match(r"^/goodluck$", raw_message)
+    match_GOODLUCK_CN = re.match(r"^随机本子$", raw_message)
 
     if match_HELP:
         await send_message(message_type, group_id, user_id, get_help_message())
@@ -1684,6 +1694,12 @@ async def handle_message_event(data):
         else:
             set_global_enc_password(password)
             await send_message(message_type, group_id, user_id, "✅ 全局加密密码已设置")
+        return
+
+    if match_GOODLUCK or match_GOODLUCK_ALT or match_GOODLUCK_CN:
+        jm_id = generate_random_jm_id()
+        await send_message(message_type, group_id, user_id, f"🎲 随机本子ID：JM{jm_id}")
+        await enqueue_downloads([jm_id], message_type, group_id, user_id, data)
         return
 
     if match_ON and user_id == admin_id:
