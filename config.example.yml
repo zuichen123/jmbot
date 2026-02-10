@@ -19,7 +19,7 @@ remote_host: 10.0.0.101
 remote_temp_dir: /home/zuichen/Server/Napcat2/.config/QQ/temp/
 local_ssh_key: /home/zuichen/.ssh/id_rsa
 docker_internal_path: /app/.config/QQ/temp/
-use_ssh_transfer: true # true=SSH上传；false=纯本地
+transfer_mode: scp # scp 或 local
 
 # 其他通用配置
 random_password_length: 10

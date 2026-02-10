@@ -29,41 +29,44 @@ import string
 
 # ====================== 基础配置 (已适配 NapCat Docker版) ======================
 app = FastAPI()
-admin_id = 627585966  # 管理者QQ号
 
-# ⚠️ 端口适配：使用新的 8071 端口，避免与旧机器人冲突
-HTTP_PORT = 8071  
+CONFIG_PATH = "config.yml"
+CONFIG_EXAMPLE_PATH = "config.example.yml"
 
-# ⚠️ WebSocket适配：指向 Docker 映射出来的 13001 端口
-WEBSOCKET_URL = "ws://10.0.0.101:13001"
-WEBSOCKET_TOKEN = "1"  # ✅ 新增：Token 鉴权
-
-FILE_DIR = "./pdf/"
-LOG_DIR = "./logs"
-
-FILE_SEND_TIMEOUT_SECONDS = 120
-
-# ====================== 转发重定向配置 ======================
-REDIRECT_GROUP_ID = 1083663846
-REDIRECT_THRESHOLD = 10
-FORWARD_BATCH_SIZE = 80
-
-# ====================== 关键路径配置 (Docker 适配) ======================
-# SCP 目标地址：这是宿主机上的实际路径 (NapCat 的 config 目录)
-REMOTE_USER = "zuichen"
-REMOTE_HOST = "10.0.0.101"  # ✅ 修改：使用本机回环地址 (前提是本机 SSH key 已配好)
-REMOTE_TEMP_DIR = "/home/zuichen/Server/Napcat2/.config/QQ/temp/" 
-LOCAL_SSH_KEY = "/home/zuichen/.ssh/id_rsa"
-
-# ✅ 新增：Docker 容器内部看到的路径
-# 宿主机的 .config/QQ 挂载到了容器的 /app/.config/QQ
-DOCKER_INTERNAL_PATH = "/app/.config/QQ/temp/"
-
-RANDOM_PASSWORD_LENGTH = 10
+if not os.path.exists(CONFIG_PATH):
+    if os.path.exists(CONFIG_EXAMPLE_PATH):
+        shutil.copyfile(CONFIG_EXAMPLE_PATH, CONFIG_PATH)
+    else:
+        raise FileNotFoundError(f"Missing {CONFIG_PATH} and {CONFIG_EXAMPLE_PATH}")
 
 # 读取配置文件
-with open("config.yml", "r", encoding="utf-8") as f:
-    _config = yaml.safe_load(f)
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    _config = yaml.safe_load(f) or {}
+
+admin_id = int(_config.get("admin_id", 627585966))
+
+HTTP_PORT = int(_config.get("http_port", 8071))
+WEBSOCKET_URL = _config.get("websocket_url", "ws://10.0.0.101:13001")
+WEBSOCKET_TOKEN = _config.get("websocket_token", "1")
+
+FILE_DIR = _config.get("file_dir", "./pdf/")
+LOG_DIR = _config.get("log_dir", "./logs")
+
+FILE_SEND_TIMEOUT_SECONDS = int(_config.get("file_send_timeout_seconds", 120))
+
+# ====================== 转发重定向配置 ======================
+REDIRECT_GROUP_ID = int(_config.get("redirect_group_id", 1083663846))
+REDIRECT_THRESHOLD = int(_config.get("redirect_threshold", 10))
+FORWARD_BATCH_SIZE = int(_config.get("forward_batch_size", 80))
+
+# ====================== 关键路径配置 (Docker 适配) ======================
+REMOTE_USER = _config.get("remote_user", "zuichen")
+REMOTE_HOST = _config.get("remote_host", "10.0.0.101")
+REMOTE_TEMP_DIR = _config.get("remote_temp_dir", "/home/zuichen/Server/Napcat2/.config/QQ/temp/")
+LOCAL_SSH_KEY = _config.get("local_ssh_key", "/home/zuichen/.ssh/id_rsa")
+DOCKER_INTERNAL_PATH = _config.get("docker_internal_path", "/app/.config/QQ/temp/")
+
+RANDOM_PASSWORD_LENGTH = int(_config.get("random_password_length", 10))
 
 banned_id: list[str] = [str(id) for id in _config.get("banned_id", [])]
 banned_user: list[str] = [str(user) for user in _config.get("banned_user", [])]
@@ -84,13 +87,20 @@ enc_password_group: dict = _config.get("enc_password_group", {})
 random_password_enabled_global: bool = bool(_config.get("random_password_enabled_global", False))
 random_password_enabled_group: dict = _config.get("random_password_enabled_group", {})
 
-transfer_mode: str = _config.get("transfer_mode", "scp")  # scp 或 local
+transfer_mode = _config.get("transfer_mode")
+if not transfer_mode:
+    use_ssh_transfer = _config.get("use_ssh_transfer")
+    if isinstance(use_ssh_transfer, bool):
+        transfer_mode = "scp" if use_ssh_transfer else "local"
+    else:
+        transfer_mode = "scp"
+transfer_mode = str(transfer_mode).lower()
 
 regex_enabled_global: bool = bool(_config.get("regex_enabled_global", False))
 regex_enabled_group: dict = _config.get("regex_enabled_group", {})
 
 # ====================== 去重配置 ======================
-DEDUP_WINDOW_SECONDS = 12 * 60 * 60
+DEDUP_WINDOW_SECONDS = int(_config.get("dedup_window_seconds", 12 * 60 * 60))
 recent_requests: dict[str, dict[str, float]] = {}
 
 # ====================== 搜索状态配置 ======================
@@ -139,7 +149,7 @@ def get_total_memory_mb():
     return main_mem / 1024 / 1024, child_mem / 1024 / 1024
 
 def update_config():
-    with open("config.yml", "w", encoding="utf-8") as f:
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         yaml.dump(_config, f, allow_unicode=True, sort_keys=False, indent=4)
 
 def is_filename_too_long_error(err: Exception) -> bool:
@@ -237,15 +247,12 @@ def delete_remote_file(remote_file_path):
             log("[❌ Cleaner]", f"删除本地文件失败：{e}", "error")
             return False
 
-    # 这里我们简化逻辑，因为是本机，可以直接用 os.remove 删除
-    # 如果必须用 SSH 删除，保持原有逻辑即可
-    # 为了保险起见，这里还是保留 SSH 逻辑，或者你可以改为 os.remove(remote_file_path) 如果权限允许
     ssh_cmd = [
         "ssh",
         "-i", LOCAL_SSH_KEY,
         "-o", "StrictHostKeyChecking=no",
         f"{REMOTE_USER}@{REMOTE_HOST}",
-        f"rm -f '{remote_file_path}'" # 加引号防止文件名空格
+        f"rm -f '{remote_file_path}'"
     ]
 
     try:
@@ -1107,7 +1114,7 @@ class NapcatWebSocketBot:
 # ====================== 全局状态管理 (传入 Token) ======================
 bot = NapcatWebSocketBot(WEBSOCKET_URL, token=WEBSOCKET_TOKEN)
 client = jmcomic.JmOption.default().new_jm_client()
-max_episodes = 20
+max_episodes = int(_config.get("max_episodes", 20))
 jm_functioning = True
 jm_is_running = False
 jm_task_queue: asyncio.Queue = asyncio.Queue()
@@ -1129,6 +1136,8 @@ def set_jm_running(condition):
 def set_download_max_epiosdes(num):
     global max_episodes
     max_episodes = num
+    _config["max_episodes"] = num
+    update_config()
 
 def get_download_max_epiosdes():
     return max_episodes
