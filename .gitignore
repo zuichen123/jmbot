@@ -1,4 +1,6 @@
 venv/
+pdf/
+logs/
 __pycache__/
 *.log
 download/
@@ -6,3 +8,4 @@ download/
 *.pdf
 start_coding.sh
 .aider*
+config.yml

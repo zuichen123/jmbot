@@ -1,0 +1,71 @@
+# 示例配置文件：首次运行会复制为 config.yml
+# 请根据实际环境修改以下配置
+admin_id: 100000001 # 管理员QQ号
+http_port: 8071 # HTTP监听端口
+websocket_url: ws://10.0.0.101:13001 # WebSocket地址
+websocket_token: '1' # WebSocket鉴权Token
+file_dir: ./pdf/ # PDF文件目录
+log_dir: ./logs # 日志目录
+file_send_timeout_seconds: 120 # 文件发送超时(秒)
+
+# 转发/重定向配置
+redirect_group_id: 100000002
+redirect_threshold: 10
+forward_batch_size: 80
+
+# 远程/本地文件传输配置
+remote_user: zuichen
+remote_host: 10.0.0.101
+remote_temp_dir: /home/zuichen/Server/Napcat2/.config/QQ/temp/
+local_ssh_key: /home/zuichen/.ssh/id_rsa
+docker_internal_path: /app/.config/QQ/temp/
+use_ssh_transfer: true # true=SSH上传；false=纯本地
+
+# 其他通用配置
+random_password_length: 10
+dedup_window_seconds: 43200
+max_concurrent_downloads: 2
+max_episodes: 20
+
+# 发送模式配置
+send_mode_global: pdf
+send_mode_group:
+    '100000003': pdf
+    '100000004': zip
+send_name_mode_global: full
+send_name_mode_group:
+    '100000003': jm
+
+# 加密配置
+enc_enabled_global: false
+enc_enabled_group:
+    '100000003': true
+    '100000004': true
+    '100000005': true
+    '100000006': true
+    '100000007': true
+enc_password_global: ''
+enc_password_group:
+    '100000003': '123456'
+    '100000004': '321'
+    '100000005': '350234'
+    '100000006': '123456'
+    '100000007': '114514'
+random_password_enabled_global: false
+random_password_enabled_group:
+    '100000003': true
+    '100000004': true
+
+# 正则匹配配置
+regex_enabled_global: false
+regex_enabled_group:
+    '100000006': true
+    '100000005': true
+    '100000007': true
+    '100000004': true
+
+# 黑名单配置
+banned_id: []
+banned_user: []
+banned_group: []
+banned_tags: []
