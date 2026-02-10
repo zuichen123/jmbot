@@ -72,6 +72,9 @@ banned_group: list[str] = [str(group) for group in _config.get("banned_group", [
 send_mode_global: str = _config.get("send_mode_global", "pdf")
 send_mode_group: dict = _config.get("send_mode_group", {})
 
+send_name_mode_global: str = _config.get("send_name_mode_global", "full")
+send_name_mode_group: dict = _config.get("send_name_mode_group", {})
+
 enc_enabled_global: bool = bool(_config.get("enc_enabled_global", False))
 enc_enabled_group: dict = _config.get("enc_enabled_group", {})
 
@@ -256,6 +259,24 @@ def set_group_send_mode(group_id: int, mode: str):
     _config["send_mode_group"] = send_mode_group
     update_config()
 
+def get_send_name_mode(group_id: int | None):
+    if group_id is not None:
+        group_mode = send_name_mode_group.get(str(group_id))
+        if group_mode in ("jm", "full"):
+            return group_mode
+    return send_name_mode_global if send_name_mode_global in ("jm", "full") else "full"
+
+def set_global_send_name_mode(mode: str):
+    global send_name_mode_global
+    send_name_mode_global = mode
+    _config["send_name_mode_global"] = mode
+    update_config()
+
+def set_group_send_name_mode(group_id: int, mode: str):
+    send_name_mode_group[str(group_id)] = mode
+    _config["send_name_mode_group"] = send_name_mode_group
+    update_config()
+
 def get_enc_enabled(group_id: int | None):
     if group_id is not None:
         group_enabled = enc_enabled_group.get(str(group_id))
@@ -358,6 +379,34 @@ def sanitize_filename_for_transfer_strict(filename: str) -> str:
 def generate_random_password(length: int = RANDOM_PASSWORD_LENGTH) -> str:
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(max(4, length)))
+
+def prepare_send_file_with_name(file_path: str, desired_base_name: str) -> tuple[str, bool]:
+    base_name = sanitize_filename_component(desired_base_name).strip()
+    if not base_name:
+        base_name = "JM"
+    ext = os.path.splitext(file_path)[1]
+    temp_dir = tempfile.gettempdir()
+    name_max = get_fs_name_max(temp_dir)
+
+    desired_name = f"{base_name}{ext}"
+    if len(desired_name.encode("utf-8")) > name_max:
+        desired_name = shorten_filename(desired_name, name_max)
+
+    desired_name = sanitize_filename_for_transfer(desired_name)
+    desired_path = os.path.join(temp_dir, desired_name)
+
+    if os.path.basename(file_path) == desired_name:
+        return file_path, False
+
+    if os.path.exists(desired_path):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        desired_path = os.path.join(
+            temp_dir,
+            f"{os.path.splitext(desired_name)[0]}_{timestamp}{os.path.splitext(desired_name)[1]}"
+        )
+
+    shutil.copyfile(file_path, desired_path)
+    return desired_path, True
 
 def prepare_file_for_scp(file_path: str, force_safe: bool = False) -> tuple[str, bool]:
     base_name = os.path.basename(file_path)
@@ -1214,6 +1263,7 @@ async def process_jm_command(number, message_type, group_id, user_id, scope_key,
         send_mode = get_send_mode(group_id if message_type == "group" else None)
         enc_enabled = get_enc_enabled(group_id if message_type == "group" else None)
         random_password_enabled = get_random_password_enabled(group_id if message_type == "group" else None)
+        send_name_mode = get_send_name_mode(group_id if message_type == "group" else None)
         password = ""
 
         temp_files = []
@@ -1244,8 +1294,13 @@ async def process_jm_command(number, message_type, group_id, user_id, scope_key,
             temp_files.append(zip_path)
             send_path = zip_path
 
-        file_size = os.path.getsize(send_path) / (1024 * 1024)
-        file_label = "ZIP" if send_path.endswith(".zip") else "PDF"
+        send_base_name = f"JM{number}" if send_name_mode == "jm" else sanitize_pdf_title(title) or f"JM{number}"
+        send_path_for_delivery, cleanup_send_copy = prepare_send_file_with_name(send_path, send_base_name)
+        if cleanup_send_copy:
+            temp_files.append(send_path_for_delivery)
+
+        file_size = os.path.getsize(send_path_for_delivery) / (1024 * 1024)
+        file_label = "ZIP" if send_path_for_delivery.endswith(".zip") else "PDF"
         msg = f"✅ 天堂正在发送：\n车牌号：{number}\n本子名：{title}\n文件类型：{file_label}\n文件大小：({file_size:.2f}MB)"
         if enc_enabled and password:
             msg += f"\n密码：{password}"
@@ -1256,16 +1311,16 @@ async def process_jm_command(number, message_type, group_id, user_id, scope_key,
                 message_type,
                 group_id,
                 user_id,
-                send_path,
+                send_path_for_delivery,
                 uploader_id,
                 uploader_name,
                 msg
             )
         else:
             if message_type == "group":
-                send_result = await bot.send_group_file(group_id, send_path)
+                send_result = await bot.send_group_file(group_id, send_path_for_delivery)
             else:
-                send_result = await bot.send_private_file(user_id, send_path)
+                send_result = await bot.send_private_file(user_id, send_path_for_delivery)
 
         for temp_file in temp_files:
             try:
@@ -1348,8 +1403,9 @@ def get_help_message():
         "5) /jm enc on|off：设置是否加密（群聊设置群专用，私聊设置全局）\n"
         "6) /jm passwd <密码>：设置加密密码（群聊设置群专用，私聊设置全局）\n"
         "7) /jm randpwd on|off：启用随机密码加密（群聊设置群专用，私聊设置全局）\n"
-        "8) /jm regex on|off：设置正则模式（群聊设置群专用，私聊设置全局）\n"
-        "9) /jm help：查看帮助\n\n"
+        "8) /jm fname jm|full：设置发送文件命名方式（群聊设置群专用，私聊设置全局）\n"
+        "9) /jm regex on|off：设置正则模式（群聊设置群专用，私聊设置全局）\n"
+        "10) /jm help：查看帮助\n\n"
         "🔧 管理命令（仅管理员）：\n"
         "• /jm on：开启禁漫功能\n"
         "• /jm off：关闭禁漫功能\n"
@@ -1483,6 +1539,7 @@ async def handle_message_event(data):
     match_MODE = re.match(r"^/jm\s+mode\s+(pdf|zip)$", raw_message)
     match_ENC = re.match(r"^/jm\s+enc\s+(on|off)$", raw_message)
     match_RANDPWD = re.match(r"^/jm\s+randpwd\s+(on|off)$", raw_message)
+    match_FNAME = re.match(r"^/jm\s+fname\s+(jm|full)$", raw_message)
     match_REGEX = re.match(r"^/jm\s+regex\s+(on|off)$", raw_message)
     match_PASSWD = re.match(r"^/jm\s+passwd\s+(.+)$", raw_message)
     match_ON = re.match(r"^/jm\s+on$", raw_message)
@@ -1538,6 +1595,21 @@ async def handle_message_event(data):
             set_global_random_password_enabled(enabled)
             state = "开启" if enabled else "关闭"
             await send_message(message_type, group_id, user_id, f"✅ 全局随机密码已{state}")
+        return
+
+    if match_FNAME:
+        if user_id != admin_id:
+            await send_message(message_type, group_id, user_id, "❌ 仅管理员可设置发送文件命名方式")
+            return
+        mode = match_FNAME.group(1)
+        if message_type == "group" and group_id:
+            set_group_send_name_mode(group_id, mode)
+            label = "JM号" if mode == "jm" else "全名"
+            await send_message(message_type, group_id, user_id, f"✅ 本群发送文件命名已设置为：{label}")
+        else:
+            set_global_send_name_mode(mode)
+            label = "JM号" if mode == "jm" else "全名"
+            await send_message(message_type, group_id, user_id, f"✅ 全局发送文件命名已设置为：{label}")
         return
 
     if match_REGEX:
