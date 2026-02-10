@@ -435,6 +435,34 @@ def prepare_file_for_scp(file_path: str, force_safe: bool = False) -> tuple[str,
     shutil.copyfile(file_path, safe_path)
     return safe_path, True
 
+def randomize_file_hash(file_path: str) -> tuple[str, bool, str | None]:
+    if not os.path.exists(file_path):
+        return file_path, False, None
+
+    base_name = os.path.basename(file_path)
+    temp_dir = tempfile.mkdtemp(prefix="jm_hash_")
+    randomized_path = os.path.join(temp_dir, base_name)
+
+    shutil.copyfile(file_path, randomized_path)
+
+    try:
+        with open(randomized_path, "ab") as f:
+            f.write(b"\n")
+            f.write(secrets.token_bytes(16))
+    except Exception as e:
+        log("[❌ HASH]", f"随机化文件哈希失败: {e}", "error")
+        try:
+            os.remove(randomized_path)
+        except Exception:
+            pass
+        try:
+            os.rmdir(temp_dir)
+        except Exception:
+            pass
+        return file_path, False, None
+
+    return randomized_path, True, temp_dir
+
 def build_encrypted_pdf(pdf_path: str, password: str):
     if not os.path.exists(pdf_path):
         return None
@@ -1267,6 +1295,7 @@ async def process_jm_command(number, message_type, group_id, user_id, scope_key,
         password = ""
 
         temp_files = []
+        temp_dirs = []
         send_path = file_path
         base_name = os.path.splitext(os.path.basename(file_path))[0]
         zip_base_name = base_name
@@ -1299,6 +1328,14 @@ async def process_jm_command(number, message_type, group_id, user_id, scope_key,
         if cleanup_send_copy:
             temp_files.append(send_path_for_delivery)
 
+        randomized_path, cleanup_randomized, temp_dir = randomize_file_hash(send_path_for_delivery)
+        if cleanup_randomized:
+            temp_files.append(randomized_path)
+        if temp_dir:
+            temp_dirs.append(temp_dir)
+
+        send_path_for_delivery = randomized_path
+
         file_size = os.path.getsize(send_path_for_delivery) / (1024 * 1024)
         file_label = "ZIP" if send_path_for_delivery.endswith(".zip") else "PDF"
         msg = f"✅ 天堂正在发送：\n车牌号：{number}\n本子名：{title}\n文件类型：{file_label}\n文件大小：({file_size:.2f}MB)"
@@ -1325,6 +1362,12 @@ async def process_jm_command(number, message_type, group_id, user_id, scope_key,
         for temp_file in temp_files:
             try:
                 os.remove(temp_file)
+            except Exception:
+                pass
+
+        for temp_dir in temp_dirs:
+            try:
+                os.rmdir(temp_dir)
             except Exception:
                 pass
 
