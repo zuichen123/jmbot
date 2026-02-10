@@ -84,6 +84,8 @@ enc_password_group: dict = _config.get("enc_password_group", {})
 random_password_enabled_global: bool = bool(_config.get("random_password_enabled_global", False))
 random_password_enabled_group: dict = _config.get("random_password_enabled_group", {})
 
+transfer_mode: str = _config.get("transfer_mode", "scp")  # scp 或 local
+
 regex_enabled_global: bool = bool(_config.get("regex_enabled_global", False))
 regex_enabled_group: dict = _config.get("regex_enabled_group", {})
 
@@ -186,12 +188,21 @@ def describe_file(file_path: str) -> str:
 
 def scp_file_to_remote(local_file_path, remote_temp_filename=None):
     if not os.path.exists(local_file_path):
-        log("[❌ SCP]", f"本地文件不存在：{local_file_path}", "error")
+        log("[❌ Transfer]", f"本地文件不存在：{local_file_path}", "error")
         return None
 
     if remote_temp_filename is None:
         remote_temp_filename = f"{os.path.basename(local_file_path)}"
     remote_file_path = os.path.join(REMOTE_TEMP_DIR, remote_temp_filename)
+
+    if transfer_mode == "local":
+        try:
+            shutil.copyfile(local_file_path, remote_file_path)
+            log("[✅ Local]", f"文件已复制到本地目标：{remote_file_path}")
+            return remote_file_path
+        except Exception as e:
+            log("[❌ Local]", f"文件复制失败：{e}", "error")
+            return None
 
     scp_cmd = [
         "scp",
@@ -216,6 +227,16 @@ def scp_file_to_remote(local_file_path, remote_temp_filename=None):
         return None
 
 def delete_remote_file(remote_file_path):
+    if transfer_mode == "local":
+        try:
+            if os.path.exists(remote_file_path):
+                os.remove(remote_file_path)
+            log("[✅ Cleaner]", f"本地文件已删除：{remote_file_path}")
+            return True
+        except Exception as e:
+            log("[❌ Cleaner]", f"删除本地文件失败：{e}", "error")
+            return False
+
     # 这里我们简化逻辑，因为是本机，可以直接用 os.remove 删除
     # 如果必须用 SSH 删除，保持原有逻辑即可
     # 为了保险起见，这里还是保留 SSH 逻辑，或者你可以改为 os.remove(remote_file_path) 如果权限允许
