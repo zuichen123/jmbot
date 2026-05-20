@@ -1238,8 +1238,6 @@ func (a *App) handleMessageEvent(data map[string]any) {
 	soutuScopeKey := requestSoutuScope(messageType, groupID, userID)
 	soutuCompatScopeKey := requestSoutuCompatScope(messageType, groupID, userID)
 	if isSoutuRelatedEvent(rawMessage, data) {
-		log.Printf("[soutu-debug] recv event type=%s user=%d group=%d scope=%s soutu_scope=%s compat_scope=%s raw=%q msg_summary=%s",
-			messageType, userID, groupID, scope, soutuScopeKey, soutuCompatScopeKey, rawMessage, summarizeMessageForDebug(data))
 	}
 
 	if a.handleSoutuArmingCommand(rawMessage, messageType, groupID, userID, soutuScopeKey, soutuCompatScopeKey) {
@@ -3118,7 +3116,6 @@ func (a *App) handleSoutuArmingCommand(rawMessage, messageType string, groupID, 
 		a.soutuArmed[compatScope] = a.soutuArmed[scope]
 	}
 	a.soutuMu.Unlock()
-	log.Printf("[soutu-debug] armed until=%s scope=%s compat_scope=%s", time.Now().Add(time.Duration(cfg.SoutuTriggerWindow)*time.Second).Format(time.RFC3339), scope, compatScope)
 	a.sendMessage(messageType, groupID, userID, fmt.Sprintf("已进入识图模式，请在 %d 秒内发送图片", cfg.SoutuTriggerWindow))
 	return true
 }
@@ -3141,17 +3138,13 @@ func (a *App) tryHandleSoutuImage(data map[string]any, messageType string, group
 	if !ok {
 		a.soutuMu.Unlock()
 		if isSoutuRelatedEvent("", data) {
-			log.Printf("[soutu-debug] not armed, ignore image event scope=%s compat_scope=%s", scope, compatScope)
 		}
 		return false
 	}
-	log.Printf("[soutu-debug] armed hit scope=%s compat_scope=%s deadline=%s now=%s", scope, compatScope, deadline.Format(time.RFC3339), now.Format(time.RFC3339))
 
 	sources := extractSoutuImageSourcesFromEvent(data)
-	log.Printf("[soutu-debug] extracted sources=%d details=%v", len(sources), soutuSourceDescs(sources))
 	if len(sources) == 0 {
 		refs := extractSoutuImageFileRefsFromEvent(data)
-		log.Printf("[soutu-debug] extracted file refs=%d refs=%v", len(refs), refs)
 		for _, ref := range refs {
 			u, err := a.bot.GetImageURL(ref)
 			if err != nil {
@@ -3159,21 +3152,17 @@ func (a *App) tryHandleSoutuImage(data map[string]any, messageType string, group
 				continue
 			}
 			u = strings.TrimSpace(htmlUnescape(u))
-			log.Printf("[soutu-debug] get_image ok ref=%s url=%s", ref, u)
 			if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
 				sources = append(sources, SoutuImageSource{ImageURL: u})
 			}
 		}
-		log.Printf("[soutu-debug] sources after get_image=%d details=%v", len(sources), soutuSourceDescs(sources))
 	}
 	if len(sources) == 0 {
 		a.soutuMu.Unlock()
 		if hasUnsupportedSoutuImageRef(data) {
 			a.sendMessage(messageType, groupID, userID, "检测到本地图片路径(file://)或HTML图片标签，机器人无法直接读取。请直接发送QQ图片（不要粘贴本地路径/HTML）。")
-			log.Printf("[soutu-debug] no valid source: unsupported file/html ref detected")
 			return true
 		}
-		log.Printf("[soutu-debug] no valid source extracted, continue waiting")
 		return false
 	}
 	delete(a.soutuArmed, scope)
@@ -3185,14 +3174,12 @@ func (a *App) tryHandleSoutuImage(data map[string]any, messageType string, group
 	a.sendMessage(messageType, groupID, userID, "正在识图，请稍候...")
 	var lastErr error
 	for _, src := range sources {
-		log.Printf("[soutu-debug] searching source=%s", src.Desc())
 		result, err := searchSoutuBySource(src, cfg)
 		if err != nil {
 			lastErr = err
 			log.Printf("soutu failed for source=%s: %v", src.Desc(), err)
 			continue
 		}
-		log.Printf("[soutu-debug] search success source=%s top_title=%q", src.Desc(), soutuTopTitle(result))
 		a.sendMessage(messageType, groupID, userID, formatSoutuResult(result))
 		searchScope := requestScope(messageType, groupID, userID)
 		a.tryAutoSearchFromSoutuResult(result, searchScope, messageType, groupID, userID)
