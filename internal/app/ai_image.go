@@ -79,12 +79,8 @@ func (a *App) handleAIImageCommand(rawMessage string, data map[string]any, messa
 		useImageToImage = true
 	}
 
-	waitingImageSent := false
-	if messageType == "group" && groupID > 0 {
-		if cfg.AIImageWaitingImage != "" {
-			waitingImageSent = a.bot.SendGroupImage(groupID, cfg.AIImageWaitingImage)
-		}
-	}
+	// 发送等待提示
+	a.sendMessage(messageType, groupID, userID, "正在生成图片...")
 
 	var result *aiimage.Result
 	var err error
@@ -92,15 +88,10 @@ func (a *App) handleAIImageCommand(rawMessage string, data map[string]any, messa
 	if useImageToImage {
 		result, err = aiimage.EditImage(aiCfg, prompt, imageBytes)
 		if strings.Contains(err.Error(), "不支持图生图") {
-			if !waitingImageSent && messageType == "group" && groupID > 0 {
-				a.bot.SendGroupMsgWithAtText(groupID, userID, "当前模型不支持图生图，正在尝试文生图...")
-			}
+			a.sendMessage(messageType, groupID, userID, "当前模型不支持图生图，正在尝试文生图...")
 			result, err = aiimage.GenerateImage(aiCfg, prompt)
 		}
 	} else {
-		if !waitingImageSent && !(messageType == "group" && groupID > 0) {
-			a.sendMessage(messageType, groupID, userID, "正在生成图片...")
-		}
 		result, err = aiimage.GenerateImage(aiCfg, prompt)
 	}
 
