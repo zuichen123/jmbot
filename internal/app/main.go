@@ -2650,6 +2650,7 @@ func (a *App) processTask(task DownloadTask) {
 				reason := fmt.Sprintf("文件加密失败: %v", err)
 				notify("文件加密失败")
 				a.notifyAdminDownloadFailure(task.GroupID, task.Number, reason)
+				_ = os.Remove(encOut)
 				return
 			}
 		}
@@ -2663,6 +2664,7 @@ func (a *App) processTask(task DownloadTask) {
 			reason := fmt.Sprintf("文件压缩失败: %v", err)
 			notify("文件压缩失败")
 			a.notifyAdminDownloadFailure(task.GroupID, task.Number, reason)
+			_ = os.Remove(zipPath)
 			return
 		}
 		cleanup = append(cleanup, zipPath)

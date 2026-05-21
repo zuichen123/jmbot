@@ -192,8 +192,10 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 	// 清理封面临时文件
 	for _, album := range albums {
 		if album.Source == "Bika" {
-			coverPath := filepath.Join(os.TempDir(), fmt.Sprintf("bika_cover_%s.jpg", album.ID))
-			_ = os.Remove(coverPath)
+			for _, ext := range []string{".jpg", ".jpeg", ".png", ".webp"} {
+				coverPath := filepath.Join(os.TempDir(), fmt.Sprintf("bika_cover_%s%s", album.ID, ext))
+				_ = os.Remove(coverPath)
+			}
 		}
 	}
 
