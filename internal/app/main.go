@@ -2859,7 +2859,10 @@ func (a *App) sendComicForwardMessage(messageType string, groupID, userID int64,
 	if filePath == "" || !fileExists(filePath) {
 		return false
 	}
-	a.sendComicInfoForwardMessage(messageType, groupID, userID, infoMsg, coverPath, cfg)
+	// 转发卡片失败时回退到普通文本消息
+	if !a.sendComicInfoForwardMessage(messageType, groupID, userID, infoMsg, coverPath, cfg) {
+		a.sendMessage(messageType, groupID, userID, infoMsg)
+	}
 	if messageType == "group" && groupID > 0 {
 		return a.bot.SendGroupFile(cfg, groupID, filePath)
 	}
