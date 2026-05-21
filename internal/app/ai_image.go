@@ -70,13 +70,17 @@ func (a *App) handleAIImageCommand(rawMessage string, data map[string]any, messa
 		MaxRetries: cfg.AIImageMaxRetries,
 	}
 
+	// 提取图片
 	useImageToImage := false
 	imageBytes, extractErr := a.extractAIImageBytes(data)
 	if extractErr != nil {
-		log.Printf("[AI Image] extract image failed: %v", extractErr)
+		log.Printf("[AI Image] 提取图片失败: %v", extractErr)
 	}
 	if len(imageBytes) > 0 {
 		useImageToImage = true
+		log.Printf("[AI Image] 图生图模式，图片大小: %d bytes", len(imageBytes))
+	} else {
+		log.Printf("[AI Image] 文生图模式，提示词: %q", prompt)
 	}
 
 	// 发送等待提示
@@ -84,51 +88,78 @@ func (a *App) handleAIImageCommand(rawMessage string, data map[string]any, messa
 
 	var result *aiimage.Result
 	var err error
+	startTime := time.Now()
 
 	if useImageToImage {
+		log.Printf("[AI Image] 开始图生图 (模型: %s, 超时: %v)", aiCfg.Model, aiCfg.Timeout)
 		result, err = aiimage.EditImage(aiCfg, prompt, imageBytes)
-		if strings.Contains(err.Error(), "不支持图生图") {
+		if err != nil && strings.Contains(err.Error(), "不支持图生图") {
+			log.Printf("[AI Image] 图生图不支持，回退到文生图")
 			a.sendMessage(messageType, groupID, userID, "当前模型不支持图生图，正在尝试文生图...")
 			result, err = aiimage.GenerateImage(aiCfg, prompt)
 		}
 	} else {
+		log.Printf("[AI Image] 开始文生图 (模型: %s, 超时: %v)", aiCfg.Model, aiCfg.Timeout)
 		result, err = aiimage.GenerateImage(aiCfg, prompt)
 	}
+	elapsed := time.Since(startTime)
 
 	if err != nil {
-		log.Printf("[AI Image] prompt %q failed: %v", prompt, err)
-		msg := fmt.Sprintf("%s 图片生成失败", prompt)
+		log.Printf("[AI Image] 生图失败 [%s] 提示词: %q 耗时: %v 错误: %v",
+			map[bool]string{true: "图生图", false: "文生图"}[useImageToImage], prompt, elapsed, err)
+		// 通知用户
+		msg := fmt.Sprintf("图片生成失败: %s", err.Error())
 		if messageType == "group" && groupID > 0 {
 			a.bot.SendGroupMsgWithAtText(groupID, userID, msg)
 		} else {
 			a.bot.SendPrivateMessage(userID, msg)
 		}
+		// 通知管理员
+		adminID := cfg.AdminID
+		if adminID > 0 {
+			mode := map[bool]string{true: "图生图", false: "文生图"}[useImageToImage]
+			adminMsg := fmt.Sprintf("【AI生图失败通知】\n模式: %s\n提示词: %s\n模型: %s\n耗时: %v\n错误: %s", mode, prompt, aiCfg.Model, elapsed, err.Error())
+			a.bot.SendPrivateMessage(adminID, adminMsg)
+		}
 		return true
 	}
 
+	// 处理返回结果
 	var imageRef string
 	if result.B64JSON != "" {
+		log.Printf("[AI Image] 生图成功 (b64json) [%s] 提示词: %q 耗时: %v 数据大小: %d bytes",
+			map[bool]string{true: "图生图", false: "文生图"}[useImageToImage], prompt, elapsed, len(result.B64JSON))
 		imageRef = "base64://" + strings.TrimPrefix(result.B64JSON, "data:image/")
 		if idx := strings.Index(imageRef, ","); idx > 0 {
 			imageRef = "base64://" + imageRef[idx+1:]
 		}
 	} else if strings.HasPrefix(result.ImageURL, "data:") {
+		log.Printf("[AI Image] 生图成功 (data URI) [%s] 提示词: %q 耗时: %v",
+			map[bool]string{true: "图生图", false: "文生图"}[useImageToImage], prompt, elapsed)
 		if idx := strings.Index(result.ImageURL, ","); idx > 0 {
 			imageRef = "base64://" + result.ImageURL[idx+1:]
 		}
-	} else {
+	} else if result.ImageURL != "" {
+		log.Printf("[AI Image] 生图成功 (URL) [%s] 提示词: %q 耗时: %v URL: %s",
+			map[bool]string{true: "图生图", false: "文生图"}[useImageToImage], prompt, elapsed, result.ImageURL)
 		imageRef = result.ImageURL
-	}
-	if imageRef == "" {
+	} else {
+		log.Printf("[AI Image] 生图返回为空 [%s] 提示词: %q 耗时: %v", map[bool]string{true: "图生图", false: "文生图"}[useImageToImage], prompt, elapsed)
 		msg := "AI 画图返回为空"
 		if messageType == "group" && groupID > 0 {
 			a.bot.SendGroupMsgWithAtText(groupID, userID, msg)
 		} else {
 			a.bot.SendPrivateMessage(userID, msg)
 		}
+		adminID := cfg.AdminID
+		if adminID > 0 {
+			mode := map[bool]string{true: "图生图", false: "文生图"}[useImageToImage]
+			a.bot.SendPrivateMessage(adminID, fmt.Sprintf("【AI生图异常】\n模式: %s\n提示词: %s\n原因: 返回数据为空", mode, prompt))
+		}
 		return true
 	}
 
+	// 发送生成的图片
 	if messageType == "group" && groupID > 0 {
 		a.bot.SendGroupMsgWithAtAndImage(groupID, userID, imageRef)
 	} else {
