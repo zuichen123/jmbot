@@ -10,6 +10,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"log"
 	"math/big"
@@ -2904,6 +2907,12 @@ func (a *App) sendComicInfoForwardMessage(messageType string, groupID, userID in
 	}}
 
 	if coverPath != "" && fileExists(coverPath) {
+		// 缩略图缩放到210p以减小发送体积
+		resizedPath := a.resizeImageTo210p(coverPath)
+		if resizedPath != "" && fileExists(resizedPath) {
+			defer os.Remove(resizedPath)
+			coverPath = resizedPath
+		}
 		if pf, err := a.bot.prepareForwardFile(cfg, coverPath); err == nil && len(pf.candidates) > 0 {
 			if pf.cleanup != nil {
 				defer pf.cleanup()
@@ -3566,6 +3575,71 @@ func fileSizeMB(path string) float64 {
 		return 0
 	}
 	return float64(st.Size()) / 1024.0 / 1024.0
+}
+
+// resizeImageTo210p 缩放图片到210p高度（用于缩略图），返回新文件路径
+func (a *App) resizeImageTo210p(srcPath string) string {
+	f, err := os.Open(srcPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return ""
+	}
+
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+
+	// 如果已经是210p或更小，直接返回原路径
+	if h <= 210 {
+		return srcPath
+	}
+
+	// 计算缩放后的尺寸，保持比例
+	ratio := 210.0 / float64(h)
+	newW := int(float64(w) * ratio)
+	newH := 210
+
+	// 创建缩放后的图片（简单最近邻缩放）
+	resized := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	for y := 0; y < newH; y++ {
+		for x := 0; x < newW; x++ {
+			srcX := int(float64(x) / ratio)
+			srcY := int(float64(y) / ratio)
+			if srcX >= w {
+				srcX = w - 1
+			}
+			if srcY >= h {
+				srcY = h - 1
+			}
+			resized.Set(x, y, img.At(srcX, srcY))
+		}
+	}
+
+	// 保存为临时文件
+	ext := strings.ToLower(filepath.Ext(srcPath))
+	if ext != ".jpg" && ext != ".jpeg" && ext != ".png" {
+		ext = ".jpg"
+	}
+	tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("thumb_%d%s", time.Now().UnixNano(), ext))
+
+	out, err := os.Create(tmpPath)
+	if err != nil {
+		return ""
+	}
+	defer out.Close()
+
+	switch ext {
+	case ".png":
+		png.Encode(out, resized)
+	default:
+		jpeg.Encode(out, resized, &jpeg.Options{Quality: 85})
+	}
+
+	return tmpPath
 }
 
 func extractJMNumbersFromEvent(data map[string]any, regexEnabled bool) []string {
