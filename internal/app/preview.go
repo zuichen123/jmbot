@@ -37,6 +37,7 @@ type previewMetaResp struct {
 
 var (
 	jmIDInNameRe  = regexp.MustCompile(`(?i)jm[\s_-]*([0-9]{3,})`)
+	bikaIDInNameRe = regexp.MustCompile(`(?i)^bika_([a-f0-9]{24,})`)
 	plainIDNameRe = regexp.MustCompile(`(?:^|[^0-9])([0-9]{5,})(?:[^0-9]|$)`)
 
 	previewBooksCacheMu sync.RWMutex
@@ -311,6 +312,9 @@ func (a *App) findBookByID(id string) (previewBook, bool, error) {
 func extractIDFromName(name string) string {
 	if m := jmIDInNameRe.FindStringSubmatch(name); len(m) > 1 {
 		return normalizeJMID(m[1])
+	}
+	if m := bikaIDInNameRe.FindStringSubmatch(name); len(m) > 1 {
+		return "bika_" + m[1]
 	}
 	if m := plainIDNameRe.FindStringSubmatch(name); len(m) > 1 {
 		return normalizeJMID(m[1])
