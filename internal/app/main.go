@@ -1564,6 +1564,7 @@ func (a *App) handleMessageEvent(data map[string]any) {
 			return
 		}
 		input := strings.TrimSpace(m[1])
+		log.Printf("[验车] 开始检索: input=%q", input)
 		a.sendMessage(messageType, groupID, userID, "正在检索："+input)
 
 		var al *Album
@@ -1574,23 +1575,29 @@ func (a *App) handleMessageEvent(data map[string]any) {
 
 		// 如果去除前缀后是纯数字（JM号），直接查询
 		if re := regexp.MustCompile(`^\d+$`); re.MatchString(cleaned) {
+			log.Printf("[验车] JM号查询: %s", cleaned)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			al, err = a.jm.GetAlbum(ctx, cleaned)
 			cancel()
 			if err != nil {
+				log.Printf("[验车] 查询失败: %v", err)
 				a.sendMessage(messageType, groupID, userID, "查询失败："+err.Error())
 				return
 			}
 		} else {
 			// 否则按关键词搜索
+			log.Printf("[验车] 关键词搜索: %s", input)
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			al, err = a.jm.SearchBestAlbum(ctx, input)
 			cancel()
 			if err != nil || al == nil {
+				log.Printf("[验车] 搜索失败: err=%v", err)
 				a.sendMessage(messageType, groupID, userID, "未找到相关本子")
 				return
 			}
 		}
+
+		log.Printf("[验车] 获取到本子: ID=%s 标题=%s", al.ID, al.Title)
 
 		// 构建详细信息
 		tags := strings.Join(al.Tags, ", ")
@@ -1599,14 +1606,22 @@ func (a *App) handleMessageEvent(data map[string]any) {
 		// 优先从本地manga目录获取
 		if mangaPath, ok, _ := a.findMangaPageByID(al.ID, 1); ok && fileExists(mangaPath) {
 			coverPath = mangaPath
+			log.Printf("[验车] 使用本地封面: %s", coverPath)
 		} else {
 			// 本地没有，尝试从JM API下载第一章封面
+			log.Printf("[验车] 本地无封面，尝试从API下载")
 			coverPath = a.downloadJMCover(al.ID)
+			if coverPath != "" {
+				log.Printf("[验车] API封面下载成功: %s", coverPath)
+			} else {
+				log.Printf("[验车] API封面下载失败，无封面")
+			}
 		}
 
 		// 使用转发消息发送（信息+封面）
 		cfg := a.currentConfig()
 		infoMsg := fmt.Sprintf("【本子详情】\nID：%s\n标题：%s\n描述：%s\n标签：%s\n章节：%d\n浏览：%s", al.ID, al.Title, al.Description, tags, al.Episodes, al.Views)
+		log.Printf("[验车] 发送转发消息: coverPath=%q", coverPath)
 		a.sendComicForwardMessage(messageType, groupID, userID, infoMsg, coverPath, "", cfg)
 		return
 	}
