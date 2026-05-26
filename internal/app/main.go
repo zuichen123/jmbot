@@ -1559,20 +1559,47 @@ func (a *App) handleMessageEvent(data map[string]any) {
 		go a.sendDailyRecommend()
 		return
 	}
-	if m := mustMatch(`^/jm\s+look\s+(\d+)$`, rawMessage); m != nil {
+	if m := mustMatch(`^(?:/jm\s+(?:look|验车)\s+|验车\s+)(.+)$`, rawMessage); m != nil {
 		if !a.isJMAllowed(messageType, groupID, userID) {
 			return
 		}
-		a.sendMessage(messageType, groupID, userID, "正在检索本子 "+m[1])
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		al, err := a.jm.GetAlbum(ctx, m[1])
-		if err != nil {
-			a.sendMessage(messageType, groupID, userID, "查询失败")
-			return
+		input := strings.TrimSpace(m[1])
+		a.sendMessage(messageType, groupID, userID, "正在检索："+input)
+
+		var al *Album
+		var err error
+		// 如果输入是纯数字（JM号），直接查询
+		if re := regexp.MustCompile(`^\d+$`); re.MatchString(input) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			al, err = a.jm.GetAlbum(ctx, input)
+			cancel()
+			if err != nil {
+				a.sendMessage(messageType, groupID, userID, "查询失败："+err.Error())
+				return
+			}
+		} else {
+			// 否则按关键词搜索
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			al, err = a.jm.SearchBestAlbum(ctx, input)
+			cancel()
+			if err != nil || al == nil {
+				a.sendMessage(messageType, groupID, userID, "未找到相关本子")
+				return
+			}
 		}
-		msg := fmt.Sprintf("ID：%s\n标题：%s\n描述：%s\n标签：%s\n章节：%d\n浏览：%s", al.ID, al.Title, al.Description, strings.Join(al.Tags, ", "), al.Episodes, al.Views)
-		a.sendRecordMessage(messageType, groupID, userID, msg)
+
+		// 构建详细信息
+		tags := strings.Join(al.Tags, ", ")
+		// 获取封面（使用本地manga目录的第一页）
+		coverPath := ""
+		if mangaPath, ok, _ := a.findMangaPageByID(al.ID, 1); ok && fileExists(mangaPath) {
+			coverPath = mangaPath
+		}
+
+		// 使用转发消息发送（信息+封面）
+		cfg := a.currentConfig()
+		infoMsg := fmt.Sprintf("【本子详情】\nID：%s\n标题：%s\n描述：%s\n标签：%s\n章节：%d\n浏览：%s", al.ID, al.Title, al.Description, tags, al.Episodes, al.Views)
+		a.sendComicForwardMessage(messageType, groupID, userID, infoMsg, coverPath, "", cfg)
 		return
 	}
 	if m := mustMatch(`^(?:/jm\s+search|搜索)\s+(.+)$`, rawMessage); m != nil {
@@ -4465,7 +4492,7 @@ func helpMessage() string {
 	return "使用说明：\n" +
 		"【JM漫画】\n" +
 		"1) /jm <ID>：下载并发送本子\n" +
-		"2) /jm look <ID>：查看本子信息\n" +
+		"2) /jm look|验车 <ID或本子名>：查看本子信息（支持名称搜索）\n" +
 		"3) /jm search <本子名>：搜索本子并下载（需确认）\n" +
 		"4) /jm search | 识图 | /jm识图：开启2分钟识图等待窗口\n" +
 		"5) /jm goodluck | /goodluck | 随机本子：随机本子下载\n" +
