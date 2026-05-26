@@ -569,6 +569,54 @@ func (a *App) getBikaUserToken(userID int64) string {
 	return ""
 }
 
+// ensureBikaToken 检查token是否过期，过期则自动重登
+func (a *App) ensureBikaToken(userID int64) string {
+	bikaUserTokensMu.RLock()
+	token, ok := bikaUserTokens[userID]
+	bikaUserTokensMu.RUnlock()
+
+	if ok && time.Now().Before(token.Expires) {
+		return token.Token
+	}
+
+	// token 过期或不存在
+	cfg := a.currentConfig()
+	if !cfg.BikaAutoRenew || cfg.BikaEmail == "" || cfg.BikaPasswd == "" {
+		log.Printf("[Bika] 用户 %d token过期，未开启自动重登或未保存凭据", userID)
+		return ""
+	}
+
+	log.Printf("[Bika] 用户 %d token过期，自动重登中...", userID)
+	newToken, err := a.bika.SignIn(cfg.BikaEmail, cfg.BikaPasswd)
+	if err != nil {
+		log.Printf("[Bika] 自动重登失败: %v", err)
+		a.notifyAdminBikaRenewFailed(err)
+		return ""
+	}
+
+	bikaUserTokensMu.Lock()
+	bikaUserTokens[userID] = newToken
+	a.cfgMu.Lock()
+	a.cfg.BikaToken = newToken.Token
+	a.cfgMu.Unlock()
+	a.saveConfig()
+	bikaUserTokensMu.Unlock()
+
+	log.Printf("[Bika] 自动重登成功: %s", newToken.Name)
+	// 私聊通知管理员
+	if cfg.AdminID > 0 {
+		_ = a.bot.SendPrivateMessage(cfg.AdminID, fmt.Sprintf("【哔咔Token刷新】\n自动重登成功\n账号：%s\n新Token已保存", newToken.Name))
+	}
+	return newToken.Token
+}
+
+func (a *App) notifyAdminBikaRenewFailed(err error) {
+	cfg := a.currentConfig()
+	if cfg.AdminID > 0 {
+		_ = a.bot.SendPrivateMessage(cfg.AdminID, fmt.Sprintf("【哔咔Token刷新失败】\n原因：%v\n请手动登录：/bika login <邮箱> <密码>", err))
+	}
+}
+
 func (a *App) handleBikaCommand(rawMessage, messageType string, groupID, userID int64, scope string, data map[string]any) bool {
 	// 只处理 /bika 开头的命令
 	if !strings.HasPrefix(strings.TrimSpace(rawMessage), "/bika") {
@@ -643,10 +691,12 @@ func (a *App) handleBikaCommand(rawMessage, messageType string, groupID, userID 
 		bikaUserTokens[userID] = token
 		bikaUserTokensMu.Unlock()
 
-		// 如果是管理员登录，自动设置全局 token
+		// 如果是管理员登录，自动设置全局 token 并保存凭据
 		if userID == cfg.AdminID {
 			a.cfgMu.Lock()
 			a.cfg.BikaToken = token.Token
+			a.cfg.BikaEmail = email
+			a.cfg.BikaPasswd = password
 			a.cfgMu.Unlock()
 			a.saveConfig()
 			a.bika.token = token.Token
@@ -705,8 +755,8 @@ func (a *App) handleBikaCommand(rawMessage, messageType string, groupID, userID 
 		return true
 	}
 
-	// 以下命令需要登录（有 token）
-	token := a.getBikaUserToken(userID)
+	// 以下命令需要登录（有 token），过期自动重登
+	token := a.ensureBikaToken(userID)
 	if token == "" && userID != cfg.AdminID {
 		a.sendMessage(messageType, groupID, userID, "请先登录哔咔：/bika login <邮箱> <密码>")
 		return true
@@ -857,7 +907,7 @@ func (a *App) handleBikaCommand(rawMessage, messageType string, groupID, userID 
 }
 
 func (a *App) bikaDownloadAndSend(comicID, chapterStr string, messageType string, groupID, userID int64) {
-	token := a.getBikaUserToken(userID)
+	token := a.ensureBikaToken(userID)
 
 	comic, err := a.bika.GetComicDetail(comicID, token)
 	if err != nil {

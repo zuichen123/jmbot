@@ -119,6 +119,9 @@ type Config struct {
 	BikaToken   string `yaml:"bika_token"`
 	BikaQuality string `yaml:"bika_quality"`
 	BikaProxy   string `yaml:"bika_proxy"`
+	BikaEmail   string `yaml:"bika_email"`    // 登录邮箱（用于自动重登）
+	BikaPasswd  string `yaml:"bika_passwd"`   // 登录密码（用于自动重登）
+	BikaAutoRenew bool `yaml:"bika_auto_renew"` // token过期自动重登
 
 	DailyRecommendEnabled bool    `yaml:"daily_recommend_enabled"`
 	DailyRecommendHour    int     `yaml:"daily_recommend_hour"`
