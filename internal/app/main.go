@@ -1568,10 +1568,14 @@ func (a *App) handleMessageEvent(data map[string]any) {
 
 		var al *Album
 		var err error
-		// 如果输入是纯数字（JM号），直接查询
-		if re := regexp.MustCompile(`^\d+$`); re.MatchString(input) {
+
+		// 去除 JM/jm 前缀
+		cleaned := strings.TrimPrefix(strings.TrimPrefix(input, "jm"), "JM")
+
+		// 如果去除前缀后是纯数字（JM号），直接查询
+		if re := regexp.MustCompile(`^\d+$`); re.MatchString(cleaned) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			al, err = a.jm.GetAlbum(ctx, input)
+			al, err = a.jm.GetAlbum(ctx, cleaned)
 			cancel()
 			if err != nil {
 				a.sendMessage(messageType, groupID, userID, "查询失败："+err.Error())
