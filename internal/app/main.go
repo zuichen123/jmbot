@@ -2948,20 +2948,22 @@ func (a *App) notifyAdminSendFailure(groupID int64, jmNumber, title, filePath st
 // real QQ file. Comic files inside merged forwards can point to transient NapCat
 // paths and become unopenable in chat history.
 func (a *App) sendComicForwardMessage(messageType string, groupID, userID int64, infoMsg, coverPath, filePath string, cfg Config) bool {
-	if filePath == "" || !fileExists(filePath) {
-		return false
-	}
 	// 转发卡片失败时回退到普通文本消息
-	if !a.sendComicInfoForwardMessage(messageType, groupID, userID, infoMsg, coverPath, cfg) {
+	infoOK := a.sendComicInfoForwardMessage(messageType, groupID, userID, infoMsg, coverPath, cfg)
+	if !infoOK {
 		a.sendMessage(messageType, groupID, userID, infoMsg)
 	}
-	if messageType == "group" && groupID > 0 {
-		return a.bot.SendGroupFile(cfg, groupID, filePath)
+
+	// 如果有文件则发送文件
+	if filePath != "" && fileExists(filePath) {
+		if messageType == "group" && groupID > 0 {
+			return a.bot.SendGroupFile(cfg, groupID, filePath)
+		}
+		if messageType == "private" && userID > 0 {
+			return a.bot.SendPrivateFile(cfg, userID, filePath)
+		}
 	}
-	if messageType == "private" && userID > 0 {
-		return a.bot.SendPrivateFile(cfg, userID, filePath)
-	}
-	return false
+	return infoOK
 }
 
 func (a *App) sendComicInfoForwardMessage(messageType string, groupID, userID int64, infoMsg, coverPath string, cfg Config) bool {
