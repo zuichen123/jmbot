@@ -1594,10 +1594,14 @@ func (a *App) handleMessageEvent(data map[string]any) {
 
 		// 构建详细信息
 		tags := strings.Join(al.Tags, ", ")
-		// 获取封面（使用本地manga目录的第一页）
+		// 获取封面
 		coverPath := ""
+		// 优先从本地manga目录获取
 		if mangaPath, ok, _ := a.findMangaPageByID(al.ID, 1); ok && fileExists(mangaPath) {
 			coverPath = mangaPath
+		} else {
+			// 本地没有，尝试从JM API下载第一章封面
+			coverPath = a.downloadJMCover(al.ID)
 		}
 
 		// 使用转发消息发送（信息+封面）
@@ -2863,6 +2867,42 @@ func (a *App) deleteMangaDirByID(id string) {
 	}
 }
 
+// downloadJMCover 从JM API下载第一章封面图片到临时文件
+func (a *App) downloadJMCover(albumID string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// 获取第一章信息
+	data, err := a.jm.reqAPI(ctx, "/chapter", map[string]string{"id": albumID})
+	if err != nil {
+		log.Printf("[Cover] 获取章节信息失败: %v", err)
+		return ""
+	}
+
+	images := anyToStringSlice(data["images"])
+	if len(images) == 0 {
+		return ""
+	}
+
+	// 下载第一张图片
+	imgBytes, err := a.jm.downloadImage(ctx, albumID, images[0])
+	if err != nil {
+		log.Printf("[Cover] 下载封面图片失败: %v", err)
+		return ""
+	}
+
+	// 保存到临时文件
+	ext := ".jpg"
+	if strings.HasSuffix(strings.ToLower(images[0]), ".png") {
+		ext = ".png"
+	}
+	tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("jm_cover_%s%s", albumID, ext))
+	if err := os.WriteFile(tmpPath, imgBytes, 0644); err != nil {
+		return ""
+	}
+	return tmpPath
+}
+
 func (a *App) notifyAdminDownloadFailure(groupID int64, jmNumber, reason string) {
 	cfg := a.currentConfig()
 	adminID := cfg.AdminID
@@ -2943,8 +2983,12 @@ func (a *App) sendComicInfoForwardMessage(messageType string, groupID, userID in
 	if coverPath != "" && fileExists(coverPath) {
 		// 缩略图缩放到210p以减小发送体积
 		resizedPath := a.resizeImageTo210p(coverPath)
-		if resizedPath != "" && fileExists(resizedPath) {
+		if resizedPath != "" && fileExists(resizedPath) && resizedPath != coverPath {
 			defer os.Remove(resizedPath)
+			// 如果原始封面是临时下载的，也清理
+			if strings.Contains(coverPath, "/tmp/") || strings.Contains(coverPath, os.TempDir()) {
+				defer os.Remove(coverPath)
+			}
 			coverPath = resizedPath
 		}
 		if pf, err := a.bot.prepareForwardFile(cfg, coverPath); err == nil && len(pf.candidates) > 0 {
