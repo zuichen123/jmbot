@@ -11,6 +11,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -218,7 +219,7 @@ func (a *App) handlePreviewComicAPI(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	rawID := strings.TrimSpace(parts[0])
+	rawID, _ := url.PathUnescape(strings.TrimSpace(parts[0]))
 	id := normalizeComicID(rawID)
 	log.Printf("[Preview] comic api request: rawID=%q, normalizedID=%q", rawID, id)
 	if id == "" {
@@ -1112,18 +1113,20 @@ function renderEmpty(kw) {
 }
 
 function renderCard(it) {
-  const coverUrl = '/api/comic/' + it.id + '/page/1';
+  const encodedId = encodeURIComponent(it.id);
+  const coverUrl = '/api/comic/' + encodedId + '/page/1';
   const size = formatSize(it.size);
-  return '<div class="card" onclick="location.href=\'/' + it.id + '\'" data-id="' + it.id + '">' +
+  const displayTitle = it.id.startsWith('title_') ? it.title : '<span class="title-id">JM' + it.id + '</span> ' + it.title;
+  return '<div class="card" onclick="location.href=\'/' + encodedId + '\'" data-id="' + encodedId + '">' +
     '<div class="cover">' +
     '<div class="cover-placeholder">' + icons.image + '</div>' +
     '<img src="' + coverUrl + '" loading="lazy" onerror="this.style.display=\'none\'" onload="this.previousElementSibling.style.display=\'none\'" />' +
-    '<a class="dl-btn" href="/api/comic/' + it.id + '/download" onclick="event.stopPropagation()" title="下载">' + icons.download + '</a>' +
+    '<a class="dl-btn" href="/api/comic/' + encodedId + '/download" onclick="event.stopPropagation()" title="下载">' + icons.download + '</a>' +
     '</div>' +
     '<div class="info">' +
-    '<div class="title"><span class="title-id">JM' + it.id + '</span> ' + it.title + '</div>' +
+    '<div class="title">' + displayTitle + '</div>' +
     '<div class="tags">' +
-    '<span class="tag page-count-tag" data-id="' + it.id + '">' + icons.pages + ' ...</span>' +
+    '<span class="tag page-count-tag" data-id="' + encodedId + '">' + icons.pages + ' ...</span>' +
     '<span class="tag">' + icons.size + ' ' + size + '</span>' +
     '</div>' +
     '</div>' +
