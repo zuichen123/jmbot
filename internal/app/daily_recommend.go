@@ -193,7 +193,7 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 	for _, album := range albums {
 		if album.Source == "Bika" {
 			for _, ext := range []string{".jpg", ".jpeg", ".png", ".webp"} {
-				coverPath := filepath.Join(os.TempDir(), fmt.Sprintf("bika_cover_%s%s", album.ID, ext))
+				coverPath := filepath.Join(a.tmpDir(), fmt.Sprintf("bika_cover_%s%s", album.ID, ext))
 				_ = os.Remove(coverPath)
 			}
 		}
@@ -232,7 +232,7 @@ func (a *App) downloadBikaCover(comicID string) string {
 
 	first := pages[0]
 	imageURL := buildBikaImageURL(first.Media.FileServer, first.Media.Path)
-	tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("bika_cover_%s%s", comicID, filepath.Ext(first.Media.OriginalName)))
+	tmpPath := filepath.Join(a.tmpDir(), fmt.Sprintf("bika_cover_%s%s", comicID, filepath.Ext(first.Media.OriginalName)))
 	if err := downloadBikaFile(imageURL, tmpPath, token, "original"); err != nil {
 		return ""
 	}

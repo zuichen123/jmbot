@@ -2,6 +2,8 @@ package app
 
 import (
 	"archive/zip"
+	"compress/gzip"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -62,10 +64,99 @@ type previewCBZPage struct {
 	ExpiresAt time.Time
 }
 
+type cachedCBZReader struct {
+	Reader    *zip.ReadCloser
+	Entries   []*zip.File
+	ModTime   time.Time
+	Size      int64
+	ExpiresAt time.Time
+}
+
+var (
+	cachedCBZReadersMu sync.Mutex
+	cachedCBZReaders   = map[string]*cachedCBZReader{}
+)
+
+func getCachedCBZReader(cbzPath string) (*cachedCBZReader, error) {
+	st, err := os.Stat(cbzPath)
+	if err != nil {
+		return nil, err
+	}
+	modTime := st.ModTime()
+	size := st.Size()
+
+	cachedCBZReadersMu.Lock()
+	defer cachedCBZReadersMu.Unlock()
+
+	if cached, ok := cachedCBZReaders[cbzPath]; ok {
+		if cached.ModTime == modTime && cached.Size == size && time.Now().Before(cached.ExpiresAt) {
+			return cached, nil
+		}
+		cached.Reader.Close()
+		delete(cachedCBZReaders, cbzPath)
+	}
+
+	r, err := zip.OpenReader(cbzPath)
+	if err != nil {
+		return nil, err
+	}
+	entries := collectImageEntries(r.File)
+	cached := &cachedCBZReader{
+		Reader:    r,
+		Entries:   entries,
+		ModTime:   modTime,
+		Size:      size,
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+	}
+	cachedCBZReaders[cbzPath] = cached
+
+	// 清理过期缓存
+	if len(cachedCBZReaders) > 64 {
+		now := time.Now()
+		for k, v := range cachedCBZReaders {
+			if now.After(v.ExpiresAt) {
+				v.Reader.Close()
+				delete(cachedCBZReaders, k)
+			}
+		}
+	}
+
+	return cached, nil
+}
+
+func generateETag(modTime time.Time, size int64) string {
+	h := md5.Sum([]byte(fmt.Sprintf("%d-%d", modTime.UnixNano(), size)))
+	return fmt.Sprintf(`"%x"`, h)
+}
+
 func (a *App) registerPreviewRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/search", a.handlePreviewSearch)
-	mux.HandleFunc("/api/comic/", a.handlePreviewComicAPI)
+	mux.HandleFunc("/api/search", a.gzipMiddleware(a.handlePreviewSearch))
+	mux.HandleFunc("/api/comic/", a.gzipMiddleware(a.handlePreviewComicAPI))
 	mux.HandleFunc("/", a.handlePreviewPage)
+}
+
+func (a *App) gzipMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next(w, r)
+			return
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+		gzw := &gzipResponseWriter{Writer: gz, ResponseWriter: w}
+		next(gzw, r)
+	}
+}
+
+type gzipResponseWriter struct {
+	io.Writer
+	http.ResponseWriter
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	return w.Writer.Write(b)
 }
 
 func (a *App) handlePreviewPage(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +250,7 @@ func (a *App) handlePreviewComicAPI(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(err.Error()))
 			return
 		} else if ok {
-			w.Header().Set("Cache-Control", "public, max-age=300")
+			w.Header().Set("Cache-Control", "public, max-age=3600")
 			http.ServeFile(w, r, mangaPath)
 			return
 		}
@@ -167,6 +258,16 @@ func (a *App) handlePreviewComicAPI(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte("comic not found"))
 			return
+		}
+		// 生成ETag用于CBZ页面缓存
+		cbzStat, statErr := os.Stat(book.Path)
+		if statErr == nil {
+			etag := generateETag(cbzStat.ModTime(), int64(pageNo))
+			if match := r.Header.Get("If-None-Match"); match == etag {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			w.Header().Set("ETag", etag)
 		}
 		raw, ext, err := readCBZPage(book.Path, pageNo)
 		if err != nil {
@@ -183,7 +284,7 @@ func (a *App) handlePreviewComicAPI(w http.ResponseWriter, r *http.Request) {
 			ct = "application/octet-stream"
 		}
 		w.Header().Set("Content-Type", ct)
-		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
 		_, _ = w.Write(raw)
 		return
 	}
@@ -220,7 +321,7 @@ func (a *App) handlePreviewComicAPI(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) listPreviewBooks() ([]previewBook, error) {
 	previewBooksCacheMu.RLock()
-	if time.Since(previewBooksCacheAt) < 5*time.Second && len(previewBooksCache) > 0 {
+	if time.Since(previewBooksCacheAt) < 60*time.Second && len(previewBooksCache) > 0 {
 		out := make([]previewBook, len(previewBooksCache))
 		copy(out, previewBooksCache)
 		previewBooksCacheMu.RUnlock()
@@ -277,15 +378,6 @@ func (a *App) listPreviewBooks() ([]previewBook, error) {
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].ModTime.After(out[j].ModTime)
 	})
-
-	// Get page counts for each book
-	for i := range out {
-		if pageCount, hasManga, _ := a.countMangaPagesByID(out[i].ID); hasManga {
-			out[i].PageCount = pageCount
-		} else if cnt, err := countCBZPages(out[i].Path); err == nil {
-			out[i].PageCount = cnt
-		}
-	}
 
 	previewBooksCacheMu.Lock()
 	previewBooksCache = make([]previewBook, len(out))
@@ -365,12 +457,11 @@ func scorePreviewBook(b previewBook) int {
 }
 
 func countCBZPages(cbzPath string) (int, error) {
-	r, err := zip.OpenReader(cbzPath)
+	cached, err := getCachedCBZReader(cbzPath)
 	if err != nil {
 		return 0, err
 	}
-	defer r.Close()
-	return len(collectImageEntries(r.File)), nil
+	return len(cached.Entries), nil
 }
 
 func readCBZPage(cbzPath string, pageNo int) ([]byte, string, error) {
@@ -379,16 +470,14 @@ func readCBZPage(cbzPath string, pageNo int) ([]byte, string, error) {
 			return raw, ext, nil
 		}
 	}
-	r, err := zip.OpenReader(cbzPath)
+	cached, err := getCachedCBZReader(cbzPath)
 	if err != nil {
 		return nil, "", err
 	}
-	defer r.Close()
-	imgs := collectImageEntries(r.File)
-	if pageNo <= 0 || pageNo > len(imgs) {
+	if pageNo <= 0 || pageNo > len(cached.Entries) {
 		return nil, "", fmt.Errorf("page out of range")
 	}
-	target := imgs[pageNo-1]
+	target := cached.Entries[pageNo-1]
 	rc, err := target.Open()
 	if err != nil {
 		return nil, "", err
@@ -441,21 +530,21 @@ func setCachedCBZPage(cbzPath string, pageNo int, raw []byte, ext string) {
 
 	previewCBZPageCacheMu.Lock()
 	defer previewCBZPageCacheMu.Unlock()
+	now := time.Now()
 	previewCBZPageCache[key] = previewCBZPage{
 		Raw:       cp,
 		Ext:       ext,
-		ExpiresAt: time.Now().Add(10 * time.Minute),
+		ExpiresAt: now.Add(30 * time.Minute),
 	}
-	if len(previewCBZPageCache) <= 256 {
+	if len(previewCBZPageCache) <= 1024 {
 		return
 	}
-	now := time.Now()
 	for k, v := range previewCBZPageCache {
 		if now.After(v.ExpiresAt) {
 			delete(previewCBZPageCache, k)
 		}
 	}
-	if len(previewCBZPageCache) > 256 {
+	if len(previewCBZPageCache) > 1024 {
 		previewCBZPageCache = map[string]previewCBZPage{}
 	}
 }
@@ -551,7 +640,7 @@ func (a *App) listMangaPagesByID(id string) ([]string, bool, error) {
 	}
 	previewMangaCache[cacheKey] = previewMangaPages{
 		Pages:     pages,
-		ExpiresAt: now.Add(30 * time.Second),
+		ExpiresAt: now.Add(5 * time.Minute),
 	}
 	previewMangaCacheMu.Unlock()
 
@@ -957,9 +1046,8 @@ function renderEmpty(kw) {
 
 function renderCard(it) {
   const coverUrl = '/api/comic/' + it.id + '/page/1';
-  const pageCount = it.page_count > 0 ? it.page_count + 'P' : '';
   const size = formatSize(it.size);
-  return '<div class="card" onclick="location.href=\'/' + it.id + '\'">' +
+  return '<div class="card" onclick="location.href=\'/' + it.id + '\'" data-id="' + it.id + '">' +
     '<div class="cover">' +
     '<div class="cover-placeholder">' + icons.image + '</div>' +
     '<img src="' + coverUrl + '" loading="lazy" onerror="this.style.display=\'none\'" onload="this.previousElementSibling.style.display=\'none\'" />' +
@@ -968,11 +1056,31 @@ function renderCard(it) {
     '<div class="info">' +
     '<div class="title"><span class="title-id">JM' + it.id + '</span> ' + it.title + '</div>' +
     '<div class="tags">' +
-    (pageCount ? '<span class="tag">' + icons.pages + ' ' + pageCount + '</span>' : '') +
+    '<span class="tag page-count-tag" data-id="' + it.id + '">' + icons.pages + ' ...</span>' +
     '<span class="tag">' + icons.size + ' ' + size + '</span>' +
     '</div>' +
     '</div>' +
     '</div>';
+}
+
+const pageObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (!entry.isIntersecting) return;
+    const el = entry.target;
+    pageObserver.unobserve(el);
+    const id = el.dataset.id;
+    fetch('/api/comic/' + id).then(r => r.json()).then(meta => {
+      if (meta.page_count > 0) {
+        el.innerHTML = icons.pages + ' ' + meta.page_count + 'P';
+      } else {
+        el.style.display = 'none';
+      }
+    }).catch(() => { el.style.display = 'none'; });
+  });
+}, { rootMargin: '200px' });
+
+function observePageCounts() {
+  document.querySelectorAll('.page-count-tag').forEach(el => pageObserver.observe(el));
 }
 
 async function load() {
@@ -986,6 +1094,7 @@ async function load() {
       grid.innerHTML = renderEmpty(q.value.trim());
     } else {
       grid.innerHTML = items.map(renderCard).join('');
+      observePageCounts();
     }
   } catch (e) {
     grid.innerHTML = renderEmpty('');
@@ -1370,6 +1479,22 @@ function render() {
   img.src = '/api/comic/' + state.id + '/page/' + page;
   badgeText.textContent = page + ' / ' + total;
   renderDots();
+  preloadPages();
+}
+
+const preloadCache = {};
+function preloadPages() {
+  const toPreload = [];
+  for (let i = 1; i <= 3; i++) {
+    if (page + i <= total) toPreload.push(page + i);
+    if (page - i >= 1) toPreload.push(page - i);
+  }
+  toPreload.forEach(p => {
+    if (preloadCache[p]) return;
+    preloadCache[p] = true;
+    const im = new Image();
+    im.src = '/api/comic/' + state.id + '/page/' + p;
+  });
 }
 
 document.getElementById('prev').onclick = () => { if (page > 1) { page--; render(); } };

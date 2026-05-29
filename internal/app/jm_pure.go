@@ -69,6 +69,7 @@ type JMBridge struct {
 	fileDir    string
 	mangaDir   string
 	cbzDir     string
+	tmpDir     string
 	timeoutSec int
 	localTest  bool
 	proxy      string
@@ -85,7 +86,7 @@ type JMBridge struct {
 	cbzSeriesEnabled  bool
 }
 
-func NewJMBridge(optionPath, fileDir, mangaDir, cbzDir string, timeoutSec int, localTest bool, proxy string) *JMBridge {
+func NewJMBridge(optionPath, fileDir, mangaDir, cbzDir, tmpDir string, timeoutSec int, localTest bool, proxy string) *JMBridge {
 	if timeoutSec <= 0 {
 		timeoutSec = 1800
 	}
@@ -94,6 +95,9 @@ func NewJMBridge(optionPath, fileDir, mangaDir, cbzDir string, timeoutSec int, l
 	}
 	if strings.TrimSpace(cbzDir) == "" {
 		cbzDir = "./cbz/"
+	}
+	if strings.TrimSpace(tmpDir) == "" {
+		tmpDir = "./tmp"
 	}
 	jar, _ := cookiejar.New(nil)
 	
@@ -111,6 +115,7 @@ func NewJMBridge(optionPath, fileDir, mangaDir, cbzDir string, timeoutSec int, l
 		fileDir:    fileDir,
 		mangaDir:   mangaDir,
 		cbzDir:     cbzDir,
+		tmpDir:     tmpDir,
 		timeoutSec: timeoutSec,
 		localTest:  localTest,
 		proxy:      proxy,
@@ -170,7 +175,7 @@ func (j *JMBridge) DownloadTo(ctx context.Context, number, outFile, password str
 		episodes = []EpisodeMeta{{ID: albumID, Sort: "1", Name: albumTitle}}
 	}
 
-	tempDir, err := os.MkdirTemp("", "jmgo_img_")
+	tempDir, err := os.MkdirTemp(j.tmpDir, "jmgo_img_")
 	if err != nil {
 		return err
 	}

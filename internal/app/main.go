@@ -56,6 +56,7 @@ type Config struct {
 	CBZChapterEnabled bool   `yaml:"cbz_chapter_enabled"`
 	CBZSeriesEnabled  bool   `yaml:"cbz_series_enabled"`
 	LogDir            string `yaml:"log_dir"`
+	TmpDir            string `yaml:"tmp_dir"`
 	JMOptionPath      string `yaml:"jm_option_path"`
 	JMProxy           string `yaml:"jm_proxy"` // JM下载代理
 	TransferMode      string `yaml:"transfer_mode"`
@@ -459,7 +460,7 @@ func NewApp(configPath, configExamplePath string) (*App, error) {
 		cfgPath:    configPath,
 		cfg:        cfg,
 		bot:        NewNapcatClient(cfg.WebsocketURL, cfg.WebsocketToken, cfg.LocalTestMode),
-		jm:         NewJMBridge(cfg.JMOptionPath, cfg.FileDir, cfg.MangaDir, cfg.CBZDir, cfg.DownloadTimeout, cfg.LocalTestMode, cfg.JMProxy),
+		jm:         NewJMBridge(cfg.JMOptionPath, cfg.FileDir, cfg.MangaDir, cfg.CBZDir, cfg.TmpDir, cfg.DownloadTimeout, cfg.LocalTestMode, cfg.JMProxy),
 		queue:      make(chan DownloadTask, 1024),
 		recent:     map[string]map[string]time.Time{},
 		search:     map[string]PendingSearch{},
@@ -587,6 +588,12 @@ func fillDefaults(cfg *Config) {
 		cfg.RemoteTempDir = "/tmp/napcat-jm-go-${USER}/temp"
 	}
 	cfg.RemoteTempDir = expandUserVars(cfg.RemoteTempDir)
+	if strings.TrimSpace(cfg.TmpDir) == "" {
+		cfg.TmpDir = "./tmp"
+	}
+	if err := os.MkdirAll(cfg.TmpDir, 0o755); err != nil {
+		log.Printf("创建临时目录失败: %v", err)
+	}
 	if cfg.DownloadTimeout == 0 {
 		cfg.DownloadTimeout = 1800
 	}
@@ -2686,7 +2693,7 @@ func (a *App) processTask(task DownloadTask) {
 			notify("未设置加密密码，请先使用 /jm passwd <密码> 设置")
 			return
 		}
-		encOut := filepath.Join(os.TempDir(), fmt.Sprintf("enc_%s_%d.pdf", task.Number, time.Now().UnixNano()))
+		encOut := filepath.Join(a.tmpDir(), fmt.Sprintf("enc_%s_%d.pdf", task.Number, time.Now().UnixNano()))
 		encrypted := false
 		if strings.EqualFold(filepath.Ext(sendPath), ".pdf") && fileExists(sendPath) {
 			if err := encryptPDFWithQPDF(sendPath, encOut, password); err == nil {
@@ -2715,7 +2722,7 @@ func (a *App) processTask(task DownloadTask) {
 	}
 
 	if sendMode == "zip" && !strings.EqualFold(filepath.Ext(sendPath), ".zip") && !strings.EqualFold(filepath.Ext(sendPath), ".cbz") {
-		zipPath, err := buildZip(sendPath)
+		zipPath, err := buildZip(sendPath, a.tmpDir())
 		if err != nil {
 			reason := fmt.Sprintf("文件压缩失败: %v", err)
 			notify("文件压缩失败")
@@ -2736,7 +2743,7 @@ func (a *App) processTask(task DownloadTask) {
 		baseName = fmt.Sprintf("%s_%s", baseName, sanitizeFileName(password))
 	}
 	if nameMode == "jm" || nameMode == "full" || downloadSource == "JM" {
-		renamed, renamedCleanup, err := cloneWithName(sendPath, baseName)
+		renamed, renamedCleanup, err := cloneWithName(sendPath, baseName, a.tmpDir())
 		if err == nil && renamed != sendPath {
 			sendPath = renamed
 			if renamedCleanup {
@@ -2747,7 +2754,7 @@ func (a *App) processTask(task DownloadTask) {
 	if nameMode == "current" && downloadSource != "JM" {
 		ext := strings.ToLower(filepath.Ext(sendPath))
 		if ext == ".zip" || ext == ".cbz" {
-			hashPath, hashCleanup, err := randomizeHash(sendPath)
+			hashPath, hashCleanup, err := randomizeHash(sendPath, a.tmpDir())
 			if err == nil && hashCleanup {
 				sendPath = hashPath
 				cleanup = append(cleanup, hashPath)
@@ -2906,12 +2913,46 @@ func (a *App) downloadJMCover(albumID string) string {
 		return ""
 	}
 
+	// 获取章节ID和scrambleID，用于解密图片
+	photoID := toJMID(anyToString(data["id"]))
+	if photoID == "" {
+		photoID = toJMID(albumID)
+	}
+	scrambleID, _ := a.jm.fetchScrambleID(ctx, photoID)
+	if scrambleID == "" {
+		scrambleID = strconv.Itoa(jmFallbackScramble)
+	}
+	num := calcSegmentationNum(scrambleID, photoID, trimExt(images[0]))
+	if num > 0 {
+		// 解码图片
+		decoded, format, decErr := image.Decode(bytesReader(imgBytes))
+		if decErr != nil {
+			log.Printf("[Cover] 图片解码失败: %v", decErr)
+		} else {
+			// 解密图片
+			unscrambled := unscrambleImage(decoded, num)
+			// 重新编码
+			var buf bytes.Buffer
+			var encErr error
+			if format == "png" {
+				encErr = png.Encode(&buf, unscrambled)
+			} else {
+				encErr = jpeg.Encode(&buf, unscrambled, &jpeg.Options{Quality: 85})
+			}
+			if encErr != nil {
+				log.Printf("[Cover] 图片编码失败: %v", encErr)
+			} else {
+				imgBytes = buf.Bytes()
+			}
+		}
+	}
+
 	// 保存到临时文件
 	ext := ".jpg"
 	if strings.HasSuffix(strings.ToLower(images[0]), ".png") {
 		ext = ".png"
 	}
-	tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("jm_cover_%s%s", albumID, ext))
+	tmpPath := filepath.Join(a.tmpDir(), fmt.Sprintf("jm_cover_%s%s", albumID, ext))
 	if err := os.WriteFile(tmpPath, imgBytes, 0644); err != nil {
 		return ""
 	}
@@ -3003,7 +3044,7 @@ func (a *App) sendComicInfoForwardMessage(messageType string, groupID, userID in
 		if resizedPath != "" && fileExists(resizedPath) && resizedPath != coverPath {
 			defer os.Remove(resizedPath)
 			// 如果原始封面是临时下载的，也清理
-			if strings.Contains(coverPath, "/tmp/") || strings.Contains(coverPath, os.TempDir()) {
+			if strings.Contains(coverPath, "/tmp/") || strings.Contains(coverPath, os.TempDir()) || strings.Contains(coverPath, a.tmpDir()) {
 				defer os.Remove(coverPath)
 			}
 			coverPath = resizedPath
@@ -3124,9 +3165,10 @@ func (a *App) flushBulkBatch(st *bulkBatchState) {
 	})
 
 	cfg := a.currentConfig()
-	okCount := 0
-	failMessages := make([]string, 0)
 
+	// 收集成功和失败的结果
+	okResults := make([]bulkTaskResult, 0)
+	failMessages := make([]string, 0)
 	for _, r := range st.Results {
 		if r.FilePath == "" {
 			if strings.TrimSpace(r.FailMsg) != "" {
@@ -3134,19 +3176,28 @@ func (a *App) flushBulkBatch(st *bulkBatchState) {
 			}
 			continue
 		}
-		okCount++
+		okResults = append(okResults, r)
+	}
 
-		// 使用转发消息发送（包含基本信息、封面、文件）
-		sendOK := a.sendComicForwardMessage(st.MessageType, st.GroupID, st.UserID, r.Message, r.CoverPath, r.FilePath, cfg)
+	// 将所有成功的漫画合并为一个转发消息发送
+	if len(okResults) > 0 {
+		sendOK := a.sendBulkComicForwardMessage(st.MessageType, st.GroupID, st.UserID, okResults, cfg)
 		if !sendOK {
-			failMessages = append(failMessages, fmt.Sprintf("JM%s：文件发送失败", r.Number))
-			a.notifyAdminSendFailure(st.GroupID, r.Number, "", r.FilePath)
+			// 合并发送失败，逐个发送
+			log.Printf("[BulkFlush] 合并转发失败，回退到逐个发送")
+			for _, r := range okResults {
+				singleOK := a.sendComicForwardMessage(st.MessageType, st.GroupID, st.UserID, r.Message, r.CoverPath, r.FilePath, cfg)
+				if !singleOK {
+					failMessages = append(failMessages, fmt.Sprintf("JM%s：文件发送失败", r.Number))
+					a.notifyAdminSendFailure(st.GroupID, r.Number, "", r.FilePath)
+				}
+			}
 		}
 	}
 
-	// 发送批量结果摘要
+	// 发送批量结果摘要（仅在有失败时）
 	if len(failMessages) > 0 {
-		summary := fmt.Sprintf("批量发送结果：成功 %d/%d\n\n%s", okCount, len(st.Results), strings.Join(failMessages, "\n"))
+		summary := fmt.Sprintf("批量发送结果：成功 %d/%d\n\n%s", len(okResults), len(st.Results), strings.Join(failMessages, "\n"))
 		a.sendMessage(st.MessageType, st.GroupID, st.UserID, summary)
 	}
 
@@ -3178,11 +3229,165 @@ func (a *App) flushBulkBatch(st *bulkBatchState) {
 	}
 }
 
+func (a *App) sendBulkComicForwardMessage(messageType string, groupID, userID int64, results []bulkTaskResult, cfg Config) bool {
+	senderID := cfg.CardUserID
+	nickname := cfg.CardNickname
+	if senderID <= 0 {
+		senderID = 10000
+	}
+	if strings.TrimSpace(nickname) == "" {
+		nickname = "文件助手"
+	}
+
+	// 准备所有文件（封面和漫画文件）
+	type preparedItem struct {
+		result   bulkTaskResult
+		coverPF  preparedForwardFile
+		filePF   preparedForwardFile
+	}
+	items := make([]preparedItem, 0, len(results))
+	defer func() {
+		for _, it := range items {
+			if it.coverPF.cleanup != nil {
+				it.coverPF.cleanup()
+			}
+			if it.filePF.cleanup != nil {
+				it.filePF.cleanup()
+			}
+		}
+	}()
+
+	for _, r := range results {
+		it := preparedItem{result: r}
+
+		// 准备封面
+		if r.CoverPath != "" && fileExists(r.CoverPath) {
+			resizedPath := a.resizeImageTo210p(r.CoverPath)
+			coverToSend := r.CoverPath
+			if resizedPath != "" && fileExists(resizedPath) && resizedPath != r.CoverPath {
+				coverToSend = resizedPath
+			}
+			if pf, err := a.bot.prepareForwardFile(cfg, coverToSend); err == nil && len(pf.candidates) > 0 {
+				it.coverPF = pf
+			}
+		}
+
+		// 准备漫画文件
+		if r.FilePath != "" && fileExists(r.FilePath) {
+			if pf, err := a.bot.prepareForwardFile(cfg, r.FilePath); err == nil && len(pf.candidates) > 0 {
+				it.filePF = pf
+			}
+		}
+
+		items = append(items, it)
+	}
+
+	// 构建转发消息节点：总览 + 每个漫画的(文本+封面+文件)
+	// 计算候选路径最大数量以支持重试
+	maxCandidates := 1
+	for _, it := range items {
+		if len(it.coverPF.candidates) > maxCandidates {
+			maxCandidates = len(it.coverPF.candidates)
+		}
+		if len(it.filePF.candidates) > maxCandidates {
+			maxCandidates = len(it.filePF.candidates)
+		}
+	}
+
+	var action string
+	var baseParams map[string]any
+	if messageType == "group" && groupID > 0 {
+		action = "send_group_forward_msg"
+		baseParams = map[string]any{"group_id": groupID}
+	} else if messageType == "private" && userID > 0 {
+		action = "send_private_forward_msg"
+		baseParams = map[string]any{"user_id": userID}
+	} else {
+		return false
+	}
+
+	for idx := 0; idx < maxCandidates; idx++ {
+		nodes := make([]map[string]any, 0, len(items)*3+1)
+
+		// 总览节点
+		summaryText := fmt.Sprintf("批量下载完成，共 %d 个本子", len(results))
+		nodes = append(nodes, map[string]any{
+			"type": "node",
+			"data": map[string]any{
+				"user_id":  senderID,
+				"nickname": nickname,
+				"content":  []map[string]any{{"type": "text", "data": map[string]any{"text": summaryText}}},
+			},
+		})
+
+		for _, it := range items {
+			// 文本信息节点
+			nodes = append(nodes, map[string]any{
+				"type": "node",
+				"data": map[string]any{
+					"user_id":  senderID,
+					"nickname": nickname,
+					"content":  []map[string]any{{"type": "text", "data": map[string]any{"text": it.result.Message}}},
+				},
+			})
+
+			// 封面图节点
+			if len(it.coverPF.candidates) > 0 {
+				coverRef := it.coverPF.candidates[len(it.coverPF.candidates)-1]
+				if idx < len(it.coverPF.candidates) {
+					coverRef = it.coverPF.candidates[idx]
+				}
+				nodes = append(nodes, map[string]any{
+					"type": "node",
+					"data": map[string]any{
+						"user_id":  senderID,
+						"nickname": nickname,
+						"content":  []map[string]any{{"type": "image", "data": map[string]any{"file": coverRef}}},
+					},
+				})
+			}
+
+			// 文件节点
+			if len(it.filePF.candidates) > 0 {
+				fileRef := it.filePF.candidates[len(it.filePF.candidates)-1]
+				if idx < len(it.filePF.candidates) {
+					fileRef = it.filePF.candidates[idx]
+				}
+				nodes = append(nodes, map[string]any{
+					"type": "node",
+					"data": map[string]any{
+						"user_id":  senderID,
+						"nickname": nickname,
+						"content":  []map[string]any{{"type": "file", "data": map[string]any{"file": fileRef}}},
+					},
+				})
+			}
+		}
+
+		params := copyMap(baseParams)
+		params["message"] = nodes
+		if _, err := a.bot.send(action, params, echo("forward_bulk_comics", groupID), 600*time.Second); err == nil {
+			return true
+		}
+		log.Printf("[BulkForward] 发送失败 (候选%d/%d)", idx+1, maxCandidates)
+	}
+
+	return false
+}
+
 func (a *App) currentConfig() Config {
 	a.cfgMu.RLock()
 	defer a.cfgMu.RUnlock()
 	cp := *a.cfg
 	return cp
+}
+
+func (a *App) tmpDir() string {
+	cfg := a.currentConfig()
+	if d := strings.TrimSpace(cfg.TmpDir); d != "" {
+		return d
+	}
+	return "./tmp"
 }
 
 func (a *App) isRecentRequest(scope, number string, window time.Duration) bool {
@@ -3601,8 +3806,8 @@ func sanitizeFileName(s string) string {
 	return s
 }
 
-func buildZip(filePath string) (string, error) {
-	tmp := filepath.Join(os.TempDir(), fmt.Sprintf("%d_%s.zip", time.Now().UnixNano(), sanitizeFileName(strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath)))))
+func buildZip(filePath, tmpDir string) (string, error) {
+	tmp := filepath.Join(tmpDir, fmt.Sprintf("%d_%s.zip", time.Now().UnixNano(), sanitizeFileName(strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath)))))
 	cmd := exec.Command("zip", "-j", "-q", tmp, filePath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("zip failed: %v: %s", err, string(out))
@@ -3610,12 +3815,12 @@ func buildZip(filePath string) (string, error) {
 	return tmp, nil
 }
 
-func cloneWithName(filePath, baseName string) (string, bool, error) {
+func cloneWithName(filePath, baseName, tmpDir string) (string, bool, error) {
 	ext := filepath.Ext(filePath)
 	safeBase := sanitizeFileName(baseName)
-	newPath := filepath.Join(os.TempDir(), safeBase+ext)
+	newPath := filepath.Join(tmpDir, safeBase+ext)
 	if fileExists(newPath) {
-		newPath = filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d%s", safeBase, time.Now().UnixNano(), ext))
+		newPath = filepath.Join(tmpDir, fmt.Sprintf("%s_%d%s", safeBase, time.Now().UnixNano(), ext))
 	}
 	raw, err := os.ReadFile(filePath)
 	if err != nil {
@@ -3640,8 +3845,8 @@ func normalizeSendNameMode(mode string) string {
 	}
 }
 
-func randomizeHash(filePath string) (string, bool, error) {
-	newPath := filepath.Join(os.TempDir(), fmt.Sprintf("hash_%d_%s", time.Now().UnixNano(), filepath.Base(filePath)))
+func randomizeHash(filePath, tmpDir string) (string, bool, error) {
+	newPath := filepath.Join(tmpDir, fmt.Sprintf("hash_%d_%s", time.Now().UnixNano(), filepath.Base(filePath)))
 	raw, err := os.ReadFile(filePath)
 	if err != nil {
 		return filePath, false, err
@@ -3719,7 +3924,7 @@ func (a *App) resizeImageTo210p(srcPath string) string {
 	if ext != ".jpg" && ext != ".jpeg" && ext != ".png" {
 		ext = ".jpg"
 	}
-	tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("thumb_%d%s", time.Now().UnixNano(), ext))
+	tmpPath := filepath.Join(a.tmpDir(), fmt.Sprintf("thumb_%d%s", time.Now().UnixNano(), ext))
 
 	out, err := os.Create(tmpPath)
 	if err != nil {
