@@ -134,8 +134,8 @@ func generateETag(modTime time.Time, size int64) string {
 }
 
 func (a *App) registerPreviewRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/search", a.gzipMiddleware(a.handlePreviewSearch))
-	mux.HandleFunc("/api/comic/", a.gzipMiddleware(a.handlePreviewComicAPI))
+	mux.HandleFunc("/api/search", a.handlePreviewSearch)
+	mux.HandleFunc("/api/comic/", a.handlePreviewComicAPI)
 	mux.HandleFunc("/", a.handlePreviewPage)
 }
 
@@ -145,11 +145,8 @@ func (a *App) gzipMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Set("Vary", "Accept-Encoding")
-		gz := gzip.NewWriter(w)
-		defer gz.Close()
-		gzw := &gzipResponseWriter{Writer: gz, ResponseWriter: w}
+		// 只对JSON响应进行gzip压缩
+		gzw := &gzipResponseWriter{Writer: nil, ResponseWriter: w, useGzip: false}
 		next(gzw, r)
 	}
 }
@@ -157,10 +154,23 @@ func (a *App) gzipMiddleware(next http.HandlerFunc) http.HandlerFunc {
 type gzipResponseWriter struct {
 	io.Writer
 	http.ResponseWriter
+	useGzip bool
+	gz      *gzip.Writer
 }
 
 func (w *gzipResponseWriter) Write(b []byte) (int, error) {
-	return w.Writer.Write(b)
+	if w.useGzip && w.gz != nil {
+		return w.gz.Write(b)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *gzipResponseWriter) WriteHeader(code int) {
+	if w.useGzip {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+	}
+	w.ResponseWriter.WriteHeader(code)
 }
 
 func (a *App) handlePreviewPage(w http.ResponseWriter, r *http.Request) {
