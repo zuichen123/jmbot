@@ -14,3 +14,4 @@ hy2_config.yaml
 install_hy2.sh
 xray_config.json
 update_xray.sh
+tmp/
