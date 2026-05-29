@@ -1485,7 +1485,7 @@ function render() {
 const preloadCache = {};
 function preloadPages() {
   const toPreload = [];
-  for (let i = 1; i <= 3; i++) {
+  for (let i = 1; i <= 10; i++) {
     if (page + i <= total) toPreload.push(page + i);
     if (page - i >= 1) toPreload.push(page - i);
   }
