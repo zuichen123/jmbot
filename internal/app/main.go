@@ -2990,10 +2990,18 @@ func (a *App) notifyAdminSendFailure(groupID int64, jmNumber, title, filePath st
 // real QQ file. Comic files inside merged forwards can point to transient NapCat
 // paths and become unopenable in chat history.
 func (a *App) sendComicForwardMessage(messageType string, groupID, userID int64, infoMsg, coverPath, filePath string, cfg Config) bool {
-	// 转发卡片失败时回退到普通文本消息
+	// 转发卡片失败时回退到普通文本消息+图片
 	infoOK := a.sendComicInfoForwardMessage(messageType, groupID, userID, infoMsg, coverPath, cfg)
 	if !infoOK {
 		a.sendMessage(messageType, groupID, userID, infoMsg)
+		// 转发失败时单独发送封面图片
+		if coverPath != "" && fileExists(coverPath) {
+			if messageType == "group" && groupID > 0 {
+				a.bot.SendGroupImage(groupID, coverPath)
+			} else if messageType == "private" && userID > 0 {
+				a.bot.SendPrivateMsgWithImage(userID, coverPath)
+			}
+		}
 	}
 
 	// 如果有文件则发送文件
