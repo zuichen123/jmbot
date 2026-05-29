@@ -8,10 +8,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"mime"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,7 +18,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 )
 
 type previewBook struct {
@@ -43,8 +40,7 @@ type previewMetaResp struct {
 var (
 	jmIDInNameRe  = regexp.MustCompile(`(?i)jm[\s_-]*([0-9]{3,})`)
 	bikaIDInNameRe = regexp.MustCompile(`(?i)^bika_([a-f0-9]{24,})`)
-	bikaIDRawRe    = regexp.MustCompile(`(?i)\b([a-f0-9]{24,})\b`)
-	plainIDNameRe  = regexp.MustCompile(`(?:^|[^0-9])([0-9]{5,})(?:[^0-9]|$)`)
+	plainIDNameRe = regexp.MustCompile(`(?:^|[^0-9])([0-9]{5,})(?:[^0-9]|$)`)
 
 	previewBooksCacheMu sync.RWMutex
 	previewBooksCache   []previewBook
@@ -145,8 +141,11 @@ func (a *App) gzipMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		// 只对JSON响应进行gzip压缩
-		gzw := &gzipResponseWriter{Writer: nil, ResponseWriter: w, useGzip: false}
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+		gzw := &gzipResponseWriter{Writer: gz, ResponseWriter: w}
 		next(gzw, r)
 	}
 }
@@ -154,23 +153,10 @@ func (a *App) gzipMiddleware(next http.HandlerFunc) http.HandlerFunc {
 type gzipResponseWriter struct {
 	io.Writer
 	http.ResponseWriter
-	useGzip bool
-	gz      *gzip.Writer
 }
 
 func (w *gzipResponseWriter) Write(b []byte) (int, error) {
-	if w.useGzip && w.gz != nil {
-		return w.gz.Write(b)
-	}
-	return w.ResponseWriter.Write(b)
-}
-
-func (w *gzipResponseWriter) WriteHeader(code int) {
-	if w.useGzip {
-		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Set("Vary", "Accept-Encoding")
-	}
-	w.ResponseWriter.WriteHeader(code)
+	return w.Writer.Write(b)
 }
 
 func (a *App) handlePreviewPage(w http.ResponseWriter, r *http.Request) {
@@ -229,16 +215,13 @@ func (a *App) handlePreviewComicAPI(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	rawID, _ := url.PathUnescape(strings.TrimSpace(parts[0]))
-	id := normalizeComicID(rawID)
-	log.Printf("[Preview] comic api request: rawID=%q, normalizedID=%q, parts=%v", rawID, id, parts)
+	id := normalizeJMID(parts[0])
 	if id == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte("invalid id"))
 		return
 	}
 	book, hasCBZ, err := a.findBookByID(id)
-	log.Printf("[Preview] findBookByID: id=%q, hasCBZ=%v, err=%v, book=%+v", id, hasCBZ, err, book)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -360,13 +343,8 @@ func (a *App) listPreviewBooks() ([]previewBook, error) {
 			return nil
 		}
 		id := extractIDFromName(d.Name())
-		// 如果没有提取到ID，用文件名（去掉扩展名）作为ID
 		if id == "" {
-			base := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
-			if base == "" {
-				return nil
-			}
-			id = "title_" + base
+			return nil
 		}
 		st, stErr := os.Stat(path)
 		if stErr != nil {
@@ -413,17 +391,13 @@ func (a *App) listPreviewBooks() ([]previewBook, error) {
 func (a *App) findBookByID(id string) (previewBook, bool, error) {
 	books, err := a.listPreviewBooks()
 	if err != nil {
-		log.Printf("[Preview] findBookByID: listPreviewBooks error: %v", err)
 		return previewBook{}, false, err
 	}
-	log.Printf("[Preview] findBookByID: looking for id=%q, total books=%d", id, len(books))
 	for _, b := range books {
 		if b.ID == id {
-			log.Printf("[Preview] findBookByID: found book: %+v", b)
 			return b, true, nil
 		}
 	}
-	log.Printf("[Preview] findBookByID: not found")
 	return previewBook{}, false, nil
 }
 
@@ -436,10 +410,6 @@ func extractIDFromName(name string) string {
 	}
 	if m := plainIDNameRe.FindStringSubmatch(name); len(m) > 1 {
 		return normalizeJMID(m[1])
-	}
-	// 匹配无前缀的bika ID（24位以上十六进制字符串）
-	if m := bikaIDRawRe.FindStringSubmatch(name); len(m) > 1 {
-		return "bika_" + strings.ToLower(m[1])
 	}
 	return ""
 }
@@ -454,30 +424,14 @@ func normalizeJMID(raw string) string {
 	return s
 }
 
-func normalizeComicID(raw string) string {
-	s := strings.TrimSpace(raw)
-	if s == "" {
-		return ""
-	}
-	// 支持 bika_ 和 title_ 前缀
-	if strings.HasPrefix(s, "bika_") || strings.HasPrefix(s, "title_") {
-		return s
-	}
-	return normalizeJMID(s)
-}
-
 func parseJMPathID(pathVal string) (string, bool) {
 	p := strings.Split(strings.TrimSpace(pathVal), "/")[0]
-	id := normalizeComicID(p)
+	id := normalizeJMID(p)
 	return id, id != ""
 }
 
 func deriveTitleFromName(name, id string) string {
 	base := strings.TrimSuffix(name, filepath.Ext(name))
-	// 安全处理：如果id包含无效UTF-8或特殊字符，直接返回清理后的文件名
-	if !utf8.ValidString(id) || strings.HasPrefix(id, "title_") {
-		return base
-	}
 	re := regexp.MustCompile(`(?i)^jm[\s_-]*` + regexp.QuoteMeta(id) + `[\s_-]*`)
 	base = re.ReplaceAllString(base, "")
 	base = strings.TrimSpace(base)
@@ -1130,7 +1084,6 @@ function renderEmpty(kw) {
 function renderCard(it) {
   const coverUrl = '/api/comic/' + it.id + '/page/1';
   const size = formatSize(it.size);
-  const displayTitle = it.id.startsWith('title_') ? it.title : '<span class="title-id">JM' + it.id + '</span> ' + it.title;
   return '<div class="card" onclick="location.href=\'/' + it.id + '\'" data-id="' + it.id + '">' +
     '<div class="cover">' +
     '<div class="cover-placeholder">' + icons.image + '</div>' +
@@ -1138,7 +1091,7 @@ function renderCard(it) {
     '<a class="dl-btn" href="/api/comic/' + it.id + '/download" onclick="event.stopPropagation()" title="下载">' + icons.download + '</a>' +
     '</div>' +
     '<div class="info">' +
-    '<div class="title">' + displayTitle + '</div>' +
+    '<div class="title"><span class="title-id">JM' + it.id + '</span> ' + it.title + '</div>' +
     '<div class="tags">' +
     '<span class="tag page-count-tag" data-id="' + it.id + '">' + icons.pages + ' ...</span>' +
     '<span class="tag">' + icons.size + ' ' + size + '</span>' +
