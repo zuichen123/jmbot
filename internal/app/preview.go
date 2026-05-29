@@ -263,7 +263,8 @@ func (a *App) handlePreviewComicAPI(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(err.Error()))
 			return
 		} else if ok {
-			w.Header().Set("Cache-Control", "public, max-age=3600")
+			w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+			w.Header().Set("Pragma", "no-cache")
 			http.ServeFile(w, r, mangaPath)
 			return
 		}
@@ -297,7 +298,8 @@ func (a *App) handlePreviewComicAPI(w http.ResponseWriter, r *http.Request) {
 			ct = "application/octet-stream"
 		}
 		w.Header().Set("Content-Type", ct)
-		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
 		_, _ = w.Write(raw)
 		return
 	}
