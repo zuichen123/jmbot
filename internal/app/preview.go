@@ -216,7 +216,8 @@ func (a *App) handlePreviewComicAPI(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	id := normalizeJMID(parts[0])
+	rawID := strings.TrimSpace(parts[0])
+	id := normalizeComicID(rawID)
 	if id == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte("invalid id"))
@@ -434,9 +435,21 @@ func normalizeJMID(raw string) string {
 	return s
 }
 
+func normalizeComicID(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	// 支持 bika_ 和 title_ 前缀
+	if strings.HasPrefix(s, "bika_") || strings.HasPrefix(s, "title_") {
+		return s
+	}
+	return normalizeJMID(s)
+}
+
 func parseJMPathID(pathVal string) (string, bool) {
 	p := strings.Split(strings.TrimSpace(pathVal), "/")[0]
-	id := normalizeJMID(p)
+	id := normalizeComicID(p)
 	return id, id != ""
 }
 
