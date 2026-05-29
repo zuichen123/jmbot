@@ -221,13 +221,14 @@ func (a *App) handlePreviewComicAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	rawID, _ := url.PathUnescape(strings.TrimSpace(parts[0]))
 	id := normalizeComicID(rawID)
-	log.Printf("[Preview] comic api request: rawID=%q, normalizedID=%q", rawID, id)
+	log.Printf("[Preview] comic api request: rawID=%q, normalizedID=%q, parts=%v", rawID, id, parts)
 	if id == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte("invalid id"))
 		return
 	}
 	book, hasCBZ, err := a.findBookByID(id)
+	log.Printf("[Preview] findBookByID: id=%q, hasCBZ=%v, err=%v, book=%+v", id, hasCBZ, err, book)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -402,13 +403,17 @@ func (a *App) listPreviewBooks() ([]previewBook, error) {
 func (a *App) findBookByID(id string) (previewBook, bool, error) {
 	books, err := a.listPreviewBooks()
 	if err != nil {
+		log.Printf("[Preview] findBookByID: listPreviewBooks error: %v", err)
 		return previewBook{}, false, err
 	}
+	log.Printf("[Preview] findBookByID: looking for id=%q, total books=%d", id, len(books))
 	for _, b := range books {
 		if b.ID == id {
+			log.Printf("[Preview] findBookByID: found book: %+v", b)
 			return b, true, nil
 		}
 	}
+	log.Printf("[Preview] findBookByID: not found")
 	return previewBook{}, false, nil
 }
 
