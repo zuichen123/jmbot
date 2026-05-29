@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type previewBook struct {
@@ -457,6 +458,10 @@ func parseJMPathID(pathVal string) (string, bool) {
 
 func deriveTitleFromName(name, id string) string {
 	base := strings.TrimSuffix(name, filepath.Ext(name))
+	// 安全处理：如果id包含无效UTF-8或特殊字符，直接返回清理后的文件名
+	if !utf8.ValidString(id) || strings.HasPrefix(id, "title_") {
+		return base
+	}
 	re := regexp.MustCompile(`(?i)^jm[\s_-]*` + regexp.QuoteMeta(id) + `[\s_-]*`)
 	base = re.ReplaceAllString(base, "")
 	base = strings.TrimSpace(base)
