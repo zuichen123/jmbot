@@ -141,22 +141,35 @@ func (a *App) gzipMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Set("Vary", "Accept-Encoding")
-		gz := gzip.NewWriter(w)
-		defer gz.Close()
-		gzw := &gzipResponseWriter{Writer: gz, ResponseWriter: w}
+		gzw := &gzipResponseWriter{ResponseWriter: w, useGzip: false}
 		next(gzw, r)
 	}
 }
 
 type gzipResponseWriter struct {
-	io.Writer
 	http.ResponseWriter
+	useGzip bool
+	code    int
+}
+
+func (w *gzipResponseWriter) WriteHeader(code int) {
+	w.code = code
+	ct := w.Header().Get("Content-Type")
+	if strings.Contains(ct, "application/json") {
+		w.useGzip = true
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+	}
+	w.ResponseWriter.WriteHeader(code)
 }
 
 func (w *gzipResponseWriter) Write(b []byte) (int, error) {
-	return w.Writer.Write(b)
+	if w.useGzip {
+		gz := gzip.NewWriter(w.ResponseWriter)
+		defer gz.Close()
+		return gz.Write(b)
+	}
+	return w.ResponseWriter.Write(b)
 }
 
 func (a *App) handlePreviewPage(w http.ResponseWriter, r *http.Request) {
