@@ -344,8 +344,13 @@ func (a *App) listPreviewBooks() ([]previewBook, error) {
 			return nil
 		}
 		id := extractIDFromName(d.Name())
+		// 如果没有提取到ID，用文件名（去掉扩展名）作为ID
 		if id == "" {
-			return nil
+			base := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
+			if base == "" {
+				return nil
+			}
+			id = "title_" + base
 		}
 		st, stErr := os.Stat(path)
 		if stErr != nil {

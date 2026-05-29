@@ -1051,7 +1051,7 @@ func (a *App) bikaDownloadAndSend(comicID, chapterStr string, messageType string
 	}
 
 	// 合并生成一个CBZ（保留章节目录结构）
-	cbzPath := filepath.Join(outputDir, fmt.Sprintf("bika_%s_%s.cbz", comicID, sanitizeFileName(comicTitle)))
+	cbzPath := filepath.Join(outputDir, sanitizeFileName(comicTitle)+".cbz")
 	if err := zipDirToCBZ(workDir, cbzPath); err != nil {
 		log.Printf("bika merge cbz failed: %v", err)
 	}
@@ -1179,7 +1179,7 @@ func (a *App) bikaDownloadComic(ctx context.Context, comicID, chapterStr string,
 	}
 
 	// 生成CBZ
-	cbzPath := filepath.Join(outputDir, fmt.Sprintf("bika_%s_%s.cbz", comicID, sanitizeFileName(comicTitle)))
+	cbzPath := filepath.Join(outputDir, sanitizeFileName(comicTitle)+".cbz")
 	if err := zipDirToCBZ(workDir, cbzPath); err != nil {
 		log.Printf("bika merge cbz failed: %v", err)
 	}
