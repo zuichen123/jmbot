@@ -1023,6 +1023,43 @@ const grid = document.getElementById('grid');
 const spinner = document.getElementById('spinner');
 let timer = null;
 
+// 状态保存与恢复
+const STATE_KEY = 'jm_preview_state';
+
+function saveState() {
+  sessionStorage.setItem(STATE_KEY, JSON.stringify({
+    query: q.value,
+    scrollY: window.scrollY,
+    html: grid.innerHTML
+  }));
+}
+
+function restoreState() {
+  const saved = sessionStorage.getItem(STATE_KEY);
+  if (!saved) return false;
+  try {
+    const state = JSON.parse(saved);
+    if (state.html) {
+      q.value = state.query || '';
+      grid.innerHTML = state.html;
+      observePageCounts();
+      if (state.scrollY) {
+        requestAnimationFrame(() => window.scrollTo(0, state.scrollY));
+      }
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+// 页面离开时保存状态
+window.addEventListener('beforeunload', saveState);
+// 点击卡片时也保存
+document.addEventListener('click', (e) => {
+  const card = e.target.closest('.card');
+  if (card) saveState();
+});
+
 const icons = {
   image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>',
   download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
@@ -1104,7 +1141,10 @@ async function load() {
 }
 
 q.addEventListener('input', load);
-load();
+// 尝试恢复状态，否则加载默认数据
+if (!restoreState()) {
+  load();
+}
 </script>
 </body>
 </html>`
