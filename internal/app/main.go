@@ -3730,7 +3730,7 @@ func normalizeSearchKeyword(k string) string {
 }
 
 func htmlUnescape(s string) string {
-	replacer := strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`, "&#39;", "'")
+	replacer := strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`, "&#39;", "'", "&#91;", "[", "&#93;", "]")
 	return replacer.Replace(s)
 }
 
