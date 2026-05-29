@@ -1593,9 +1593,10 @@ func (a *App) handleMessageEvent(data map[string]any) {
 			}
 		} else {
 			// 否则按关键词搜索
-			log.Printf("[验车] 关键词搜索: %s", input)
+			keyword := normalizeSearchKeyword(input)
+			log.Printf("[验车] 关键词搜索: %s (原始: %s)", keyword, input)
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-			al, err = a.jm.SearchBestAlbum(ctx, input)
+			al, err = a.jm.SearchBestAlbum(ctx, keyword)
 			cancel()
 			if err != nil || al == nil {
 				log.Printf("[验车] 搜索失败: err=%v", err)
@@ -3720,14 +3721,11 @@ func randomPassword(length int) string {
 
 func normalizeSearchKeyword(k string) string {
 	s := strings.TrimSpace(htmlUnescape(k))
-	re := regexp.MustCompile(`^\s*(?:\([^\)]*\)|\[[^\]]*\])\s*`)
-	for {
-		u := re.ReplaceAllString(s, "")
-		if u == s {
-			break
-		}
-		s = strings.TrimSpace(u)
-	}
+	// 移除所有 [...] 和 (...) 内容
+	bracketRe := regexp.MustCompile(`\[[^\]]*\]|\([^\)]*\)`)
+	s = bracketRe.ReplaceAllString(s, " ")
+	// 合并多个空格并trim
+	s = strings.Join(strings.Fields(s), " ")
 	return s
 }
 
