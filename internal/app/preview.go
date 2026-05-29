@@ -40,7 +40,8 @@ type previewMetaResp struct {
 var (
 	jmIDInNameRe  = regexp.MustCompile(`(?i)jm[\s_-]*([0-9]{3,})`)
 	bikaIDInNameRe = regexp.MustCompile(`(?i)^bika_([a-f0-9]{24,})`)
-	plainIDNameRe = regexp.MustCompile(`(?:^|[^0-9])([0-9]{5,})(?:[^0-9]|$)`)
+	bikaIDRawRe    = regexp.MustCompile(`(?i)\b([a-f0-9]{24,})\b`)
+	plainIDNameRe  = regexp.MustCompile(`(?:^|[^0-9])([0-9]{5,})(?:[^0-9]|$)`)
 
 	previewBooksCacheMu sync.RWMutex
 	previewBooksCache   []previewBook
@@ -410,6 +411,10 @@ func extractIDFromName(name string) string {
 	}
 	if m := plainIDNameRe.FindStringSubmatch(name); len(m) > 1 {
 		return normalizeJMID(m[1])
+	}
+	// 匹配无前缀的bika ID（24位以上十六进制字符串）
+	if m := bikaIDRawRe.FindStringSubmatch(name); len(m) > 1 {
+		return "bika_" + strings.ToLower(m[1])
 	}
 	return ""
 }
