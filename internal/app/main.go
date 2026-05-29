@@ -3721,8 +3721,8 @@ func randomPassword(length int) string {
 
 func normalizeSearchKeyword(k string) string {
 	s := strings.TrimSpace(htmlUnescape(k))
-	// 移除所有 [...] 和 (...) 内容
-	bracketRe := regexp.MustCompile(`\[[^\]]*\]|\([^\)]*\)`)
+	// 移除所有括号类内容：[]、()、【】、《》、〔〕、｛｝、『』、「」
+	bracketRe := regexp.MustCompile(`\[[^\]]*\]|\([^\)]*\)|【[^】]*】|《[^》]*》|〔[^〕]*〕|｛[^｝]*｝|『[^』]*」|「[^」]*」`)
 	s = bracketRe.ReplaceAllString(s, " ")
 	// 合并多个空格并trim
 	s = strings.Join(strings.Fields(s), " ")
