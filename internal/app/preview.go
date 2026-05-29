@@ -134,8 +134,8 @@ func generateETag(modTime time.Time, size int64) string {
 }
 
 func (a *App) registerPreviewRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/search", a.handlePreviewSearch)
-	mux.HandleFunc("/api/comic/", a.handlePreviewComicAPI)
+	mux.HandleFunc("/api/search", a.gzipMiddleware(a.handlePreviewSearch))
+	mux.HandleFunc("/api/comic/", a.gzipMiddleware(a.handlePreviewComicAPI))
 	mux.HandleFunc("/", a.handlePreviewPage)
 }
 
@@ -1128,15 +1128,14 @@ function renderEmpty(kw) {
 }
 
 function renderCard(it) {
-  const encodedId = encodeURIComponent(it.id);
-  const coverUrl = '/api/comic/' + encodedId + '/page/1';
+  const coverUrl = '/api/comic/' + it.id + '/page/1';
   const size = formatSize(it.size);
   const displayTitle = it.id.startsWith('title_') ? it.title : '<span class="title-id">JM' + it.id + '</span> ' + it.title;
-  return '<div class="card" onclick="location.href=\'/' + encodedId + '\'" data-id="' + it.id + '">' +
+  return '<div class="card" onclick="location.href=\'/' + it.id + '\'" data-id="' + it.id + '">' +
     '<div class="cover">' +
     '<div class="cover-placeholder">' + icons.image + '</div>' +
     '<img src="' + coverUrl + '" loading="lazy" onerror="this.style.display=\'none\'" onload="this.previousElementSibling.style.display=\'none\'" />' +
-    '<a class="dl-btn" href="/api/comic/' + encodedId + '/download" onclick="event.stopPropagation()" title="下载">' + icons.download + '</a>' +
+    '<a class="dl-btn" href="/api/comic/' + it.id + '/download" onclick="event.stopPropagation()" title="下载">' + icons.download + '</a>' +
     '</div>' +
     '<div class="info">' +
     '<div class="title">' + displayTitle + '</div>' +
@@ -1154,7 +1153,7 @@ const pageObserver = new IntersectionObserver((entries) => {
     const el = entry.target;
     pageObserver.unobserve(el);
     const id = el.dataset.id;
-    fetch('/api/comic/' + encodeURIComponent(id)).then(r => r.json()).then(meta => {
+    fetch('/api/comic/' + id).then(r => r.json()).then(meta => {
       if (meta.page_count > 0) {
         el.innerHTML = icons.pages + ' ' + meta.page_count + 'P';
       } else {
