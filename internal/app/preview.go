@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -218,6 +219,7 @@ func (a *App) handlePreviewComicAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	rawID := strings.TrimSpace(parts[0])
 	id := normalizeComicID(rawID)
+	log.Printf("[Preview] comic api request: rawID=%q, normalizedID=%q", rawID, id)
 	if id == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte("invalid id"))
