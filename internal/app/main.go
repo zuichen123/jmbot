@@ -1724,6 +1724,7 @@ func (a *App) handleMessageEvent(data map[string]any) {
 	// 处理确认命令（支持聚合搜索、哔咔搜索和每日推荐）
 	// 支持格式：确认 1 2 3、确认1、1、1 2 3
 	if m := mustMatch(`^(?:确认\s*)?(\d+(?:\s+\d+)*)$`, rawMessage); m != nil {
+		log.Printf("[Confirm] 匹配到数字命令: rawMessage=%q, m[1]=%q", rawMessage, m[1])
 		// 解析序号
 		parts := strings.Fields(m[1])
 		var indices []int
@@ -1747,6 +1748,7 @@ func (a *App) handleMessageEvent(data map[string]any) {
 			dailyOk = false
 		}
 		a.searchMu.Unlock()
+		log.Printf("[Confirm] 检查每日推荐缓存: dailyKey=%q, dailyOk=%v, results=%d", dailyKey, dailyOk, len(dailyPending.AggResults))
 
 		if dailyOk && len(dailyPending.AggResults) > 0 {
 			// 处理每日推荐结果
