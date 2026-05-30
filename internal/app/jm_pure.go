@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
+	"image/jpeg"
 	"image/png"
 	"io"
+	"log"
 	mrand "math/rand"
 	"net/http"
 	"net/http/cookiejar"
@@ -1040,7 +1042,29 @@ func buildPDF(outFile string, imageFiles []string, password string) error {
 	}
 
 	for _, file := range imageFiles {
-		f, err := os.Open(file)
+		// 检测图片实际格式
+		imgType, err := detectImageType(file)
+		if err != nil {
+			log.Printf("skip image %s: %v", file, err)
+			continue
+		}
+
+		// 如果扩展名与实际格式不匹配，转换图片
+		actualFile := file
+		ext := strings.ToLower(filepath.Ext(file))
+		if (ext == ".jpg" || ext == ".jpeg") && imgType != "JPG" {
+			// 扩展名是jpg但实际不是jpg，需要转换
+			converted, convErr := convertToJPEG(file)
+			if convErr != nil {
+				log.Printf("convert image failed %s: %v", file, convErr)
+				continue
+			}
+			actualFile = converted
+			defer os.Remove(converted)
+			imgType = "JPG"
+		}
+
+		f, err := os.Open(actualFile)
 		if err != nil {
 			return err
 		}
@@ -1056,20 +1080,60 @@ func buildPDF(outFile string, imageFiles []string, password string) error {
 
 		// 始终使用纵向，通过SizeType控制实际尺寸
 		pdf.AddPageFormat("P", gofpdf.SizeType{Wd: wmm, Ht: hmm})
-		
-		// 检测图片类型
-		ext := strings.ToLower(filepath.Ext(file))
-		imgType := "PNG"
-		if ext == ".jpg" || ext == ".jpeg" {
-			imgType = "JPG"
-		} else if ext == ".webp" {
-			imgType = "WEBP"
-		}
 
 		// 图片填满页面
-		pdf.ImageOptions(file, 0, 0, wmm, hmm, false, gofpdf.ImageOptions{ImageType: imgType}, 0, "")
+		pdf.ImageOptions(actualFile, 0, 0, wmm, hmm, false, gofpdf.ImageOptions{ImageType: imgType}, 0, "")
 	}
 	return pdf.OutputFileAndClose(outFile)
+}
+
+func detectImageType(file string) (string, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	// 读取文件头
+	header := make([]byte, 12)
+	_, err = f.Read(header)
+	if err != nil {
+		return "", err
+	}
+
+	// 检测格式
+	if header[0] == 0xFF && header[1] == 0xD8 {
+		return "JPG", nil
+	}
+	if header[0] == 0x89 && header[1] == 0x50 && header[2] == 0x4E && header[3] == 0x47 {
+		return "PNG", nil
+	}
+	if string(header[0:4]) == "RIFF" && string(header[8:12]) == "WEBP" {
+		return "WEBP", nil
+	}
+	return "", fmt.Errorf("unknown image format")
+}
+
+func convertToJPEG(file string) (string, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return "", err
+	}
+
+	tmpFile := strings.TrimSuffix(file, filepath.Ext(file)) + "_converted.jpg"
+	out, err := os.Create(tmpFile)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+
+	return tmpFile, jpeg.Encode(out, img, &jpeg.Options{Quality: 90})
 }
 
 func buildTestPDF(outFile, number, password string) error {
