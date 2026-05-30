@@ -166,7 +166,7 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 						"user_id":  senderID,
 						"nickname": fmt.Sprintf("%d. %s", i+1, album.Title),
 						"content": []map[string]any{
-							{"type": "file", "data": map[string]any{"file": pf.candidates[0]}},
+							{"type": "image", "data": map[string]any{"file": pf.candidates[0]}},
 						},
 					},
 				})

@@ -3094,7 +3094,7 @@ func (a *App) sendComicInfoForwardMessage(messageType string, groupID, userID in
 				"data": map[string]any{
 					"user_id":  senderID,
 					"nickname": nickname,
-					"content":  []map[string]any{{"type": "file", "data": map[string]any{"file": pf.candidates[0]}}},
+					"content":  []map[string]any{{"type": "image", "data": map[string]any{"file": pf.candidates[0]}}},
 				},
 			})
 		}
