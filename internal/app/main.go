@@ -3075,17 +3075,17 @@ func (a *App) sendComicInfoForwardMessage(messageType string, groupID, userID in
 	}}
 
 	if coverPath != "" && fileExists(coverPath) {
-		// 缩略图缩放到210p以减小发送体积
-		resizedPath := a.resizeImageTo210p(coverPath)
+		// 确保图片格式正确并缩放到210p
+		fixedPath := a.ensureValidImage(coverPath)
+		resizedPath := a.resizeImageTo210p(fixedPath)
+		coverToSend := coverPath
 		if resizedPath != "" && fileExists(resizedPath) && resizedPath != coverPath {
-			defer os.Remove(resizedPath)
-			// 如果原始封面是临时下载的，也清理
-			if strings.Contains(coverPath, "/tmp/") || strings.Contains(coverPath, os.TempDir()) || strings.Contains(coverPath, a.tmpDir()) {
-				defer os.Remove(coverPath)
-			}
-			coverPath = resizedPath
+			coverToSend = resizedPath
 		}
-		if pf, err := a.bot.prepareForwardFile(cfg, coverPath); err == nil && len(pf.candidates) > 0 {
+		if fixedPath != coverPath {
+			defer os.Remove(fixedPath)
+		}
+		if pf, err := a.bot.prepareForwardFile(cfg, coverToSend); err == nil && len(pf.candidates) > 0 {
 			if pf.cleanup != nil {
 				defer pf.cleanup()
 			}
@@ -3094,7 +3094,7 @@ func (a *App) sendComicInfoForwardMessage(messageType string, groupID, userID in
 				"data": map[string]any{
 					"user_id":  senderID,
 					"nickname": nickname,
-					"content":  []map[string]any{{"type": "image", "data": map[string]any{"file": pf.candidates[0]}}},
+					"content":  []map[string]any{{"type": "file", "data": map[string]any{"file": pf.candidates[0]}}},
 				},
 			})
 		}
