@@ -199,6 +199,15 @@ func (a *App) handlePreviewSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
 	books, err := a.listPreviewBooks()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -214,10 +223,16 @@ func (a *App) handlePreviewSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		books = filtered
 	}
-	if len(books) > 100 {
-		books = books[:100]
+	total := len(books)
+	if offset >= total {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []previewBook{}, "total": total})
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": books})
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": books[offset:end], "total": total})
 }
 
 func (a *App) handlePreviewComicAPI(w http.ResponseWriter, r *http.Request) {
@@ -1087,7 +1102,9 @@ function saveState() {
   sessionStorage.setItem(STATE_KEY, JSON.stringify({
     query: q.value,
     scrollY: window.scrollY,
-    html: grid.innerHTML
+    html: grid.innerHTML,
+    offset: currentOffset,
+    total: totalCount
   }));
 }
 
@@ -1098,6 +1115,9 @@ function restoreState() {
     const state = JSON.parse(saved);
     if (state.html) {
       q.value = state.query || '';
+      currentQuery = q.value;
+      currentOffset = state.offset || 0;
+      totalCount = state.total || 0;
       grid.innerHTML = state.html;
       observePageCounts();
       if (state.scrollY) {
@@ -1176,33 +1196,74 @@ const pageObserver = new IntersectionObserver((entries) => {
 }, { rootMargin: '200px' });
 
 function observePageCounts() {
-  document.querySelectorAll('.page-count-tag').forEach(el => pageObserver.observe(el));
+  document.querySelectorAll('.page-count-tag:not([data-observed])').forEach(el => {
+    el.dataset.observed = '1';
+    pageObserver.observe(el);
+  });
 }
 
-async function load() {
+let currentOffset = 0;
+let totalCount = 0;
+let isLoading = false;
+let currentQuery = '';
+
+async function load(reset = true) {
+  if (isLoading) return;
   clearTimeout(timer);
   spinner.classList.add('active');
+  isLoading = true;
+
+  if (reset) {
+    currentOffset = 0;
+    currentQuery = q.value.trim();
+    grid.innerHTML = '';
+  }
+
   try {
-    const r = await fetch('/api/search?q=' + encodeURIComponent(q.value.trim()));
+    const url = '/api/search?q=' + encodeURIComponent(currentQuery) + '&offset=' + currentOffset + '&limit=50';
+    const r = await fetch(url);
     const data = await r.json();
     const items = data.items || [];
-    if (items.length === 0) {
-      grid.innerHTML = renderEmpty(q.value.trim());
+    totalCount = data.total || 0;
+
+    if (items.length === 0 && currentOffset === 0) {
+      grid.innerHTML = renderEmpty(currentQuery);
     } else {
-      grid.innerHTML = items.map(renderCard).join('');
+      const html = items.map(renderCard).join('');
+      grid.insertAdjacentHTML('beforeend', html);
+      currentOffset += items.length;
       observePageCounts();
     }
   } catch (e) {
-    grid.innerHTML = renderEmpty('');
+    if (currentOffset === 0) {
+      grid.innerHTML = renderEmpty('');
+    }
   } finally {
+    isLoading = false;
     timer = setTimeout(() => spinner.classList.remove('active'), 200);
   }
 }
 
-q.addEventListener('input', load);
+// 滚动加载更多
+const loadMoreObserver = new IntersectionObserver((entries) => {
+  if (entries[0].isIntersecting && !isLoading && currentOffset < totalCount) {
+    load(false);
+  }
+}, { rootMargin: '300px' });
+
+// 创建哨兵元素
+const sentinel = document.createElement('div');
+sentinel.id = 'load-more-sentinel';
+sentinel.style.height = '1px';
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelector('.wrap').appendChild(sentinel);
+  loadMoreObserver.observe(sentinel);
+});
+
+q.addEventListener('input', () => load(true));
 // 尝试恢复状态，否则加载默认数据
 if (!restoreState()) {
-  load();
+  load(true);
 }
 </script>
 </body>
