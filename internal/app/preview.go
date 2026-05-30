@@ -366,6 +366,13 @@ func (a *App) listPreviewBooks() ([]previewBook, error) {
 			if base == "" {
 				return nil
 			}
+			// 清理无效UTF-8字符后作为ID
+			if !utf8.ValidString(base) {
+				base = strings.ToValidUTF8(base, "")
+			}
+			if base == "" {
+				return nil
+			}
 			id = "title_" + base
 		}
 		st, stErr := os.Stat(path)
@@ -470,8 +477,16 @@ func parseJMPathID(pathVal string) (string, bool) {
 
 func deriveTitleFromName(name, id string) string {
 	base := strings.TrimSuffix(name, filepath.Ext(name))
-	// 安全处理：如果id包含无效UTF-8或特殊字符，直接返回清理后的文件名
-	if !utf8.ValidString(id) || strings.HasPrefix(id, "title_") {
+	// 清理无效UTF-8字符
+	if !utf8.ValidString(base) {
+		base = strings.ToValidUTF8(base, "")
+	}
+	// 如果id包含title_前缀，直接返回清理后的文件名
+	if strings.HasPrefix(id, "title_") {
+		return base
+	}
+	// 安全处理：如果id包含无效UTF-8，直接返回清理后的文件名
+	if !utf8.ValidString(id) {
 		return base
 	}
 	re := regexp.MustCompile(`(?i)^jm[\s_-]*` + regexp.QuoteMeta(id) + `[\s_-]*`)
@@ -1126,6 +1141,8 @@ function renderEmpty(kw) {
 function renderCard(it) {
   const coverUrl = '/api/comic/' + it.id + '/page/1';
   const size = formatSize(it.size);
+  // title_开头的ID不显示JM前缀
+  const displayTitle = it.id.startsWith('title_') ? it.title : '<span class="title-id">JM' + it.id + '</span> ' + it.title;
   return '<div class="card" onclick="location.href=\'/' + it.id + '\'" data-id="' + it.id + '">' +
     '<div class="cover">' +
     '<div class="cover-placeholder">' + icons.image + '</div>' +
@@ -1133,7 +1150,7 @@ function renderCard(it) {
     '<a class="dl-btn" href="/api/comic/' + it.id + '/download" onclick="event.stopPropagation()" title="下载">' + icons.download + '</a>' +
     '</div>' +
     '<div class="info">' +
-    '<div class="title"><span class="title-id">JM' + it.id + '</span> ' + it.title + '</div>' +
+    '<div class="title">' + displayTitle + '</div>' +
     '<div class="tags">' +
     '<span class="tag page-count-tag" data-id="' + it.id + '">' + icons.pages + ' ...</span>' +
     '<span class="tag">' + icons.size + ' ' + size + '</span>' +
