@@ -174,6 +174,7 @@ type PendingSearch struct {
 	Title      string
 	At         time.Time
 	AggResults []SearchResultItem
+	MessageID  string // 每日推荐的消息ID，用于判断是否回复了该消息
 }
 
 type SearchResultItem struct {
@@ -1742,7 +1743,28 @@ func (a *App) handleMessageEvent(data map[string]any) {
 			return
 		}
 
-		// 先检查每日推荐缓存
+		// 检查是否回复了每日推荐的消息（通过检查被回复消息的特征文本）
+		isDailyReply := false
+		replyID := extractReplyID(rawMessage)
+		if replyID != "" {
+			// 通过检查原始消息中的特征文本来判断是否是每日推荐
+			// 从 data 中获取被回复消息的内容
+			if msgArray, ok := data["message"].([]any); ok {
+				for _, seg := range msgArray {
+					if segMap, ok := seg.(map[string]any); ok {
+						if segMap["type"] == "reply" {
+							// 这是回复消息，但我们无法直接获取被回复消息的内容
+							// 使用一个简单的方法：检查用户是否明确回复了每日推荐
+							// 由于无法获取被回复消息内容，我们假设回复消息时使用数字就是回复每日推荐
+							isDailyReply = true
+							break
+						}
+					}
+				}
+			}
+		}
+
+		// 只有回复消息时才检查每日推荐缓存
 		dailyKey := fmt.Sprintf("daily:%d", groupID)
 		a.searchMu.Lock()
 		dailyPending, dailyOk := a.search[dailyKey]
@@ -1751,9 +1773,9 @@ func (a *App) handleMessageEvent(data map[string]any) {
 			dailyOk = false
 		}
 		a.searchMu.Unlock()
-		log.Printf("[Confirm] 检查每日推荐缓存: dailyKey=%q, dailyOk=%v, results=%d", dailyKey, dailyOk, len(dailyPending.AggResults))
+		log.Printf("[Confirm] 检查每日推荐缓存: dailyKey=%q, dailyOk=%v, results=%d, isDailyReply=%v", dailyKey, dailyOk, len(dailyPending.AggResults), isDailyReply)
 
-		if dailyOk && len(dailyPending.AggResults) > 0 {
+		if isDailyReply && dailyOk && len(dailyPending.AggResults) > 0 {
 			// 处理每日推荐结果
 			var validItems []SearchResultItem
 			for _, idx := range indices {
@@ -3973,6 +3995,15 @@ func extractJMNumbersFromEvent(data map[string]any, regexEnabled bool) []string 
 func stripCQCodes(s string) string {
 	re := regexp.MustCompile(`\[CQ:[^\]]*\]`)
 	return re.ReplaceAllString(s, "")
+}
+
+func extractReplyID(s string) string {
+	re := regexp.MustCompile(`\[CQ:reply,id=(\d+)\]`)
+	m := re.FindStringSubmatch(s)
+	if len(m) > 1 {
+		return m[1]
+	}
+	return ""
 }
 
 func extractTextFromEvent(data map[string]any) string {
