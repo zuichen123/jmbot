@@ -138,7 +138,7 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 			},
 		})
 
-		// 封面节点（使用file类型而非image）
+		// 封面节点（使用image类型）
 		coverPath := ""
 		if album.Source == "Bika" && album.CoverURL != "" {
 			coverPath = a.downloadBikaCover(album.ID)
@@ -149,14 +149,20 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 		}
 
 		if coverPath != "" && fileExists(coverPath) {
-			if pf, err := a.bot.prepareForwardFile(cfg, coverPath); err == nil && len(pf.candidates) > 0 {
+			// 缩放封面到210p
+			resizedPath := a.resizeImageTo210p(coverPath)
+			coverToSend := coverPath
+			if resizedPath != "" && fileExists(resizedPath) {
+				coverToSend = resizedPath
+			}
+			if pf, err := a.bot.prepareForwardFile(cfg, coverToSend); err == nil && len(pf.candidates) > 0 {
 				nodes = append(nodes, map[string]any{
 					"type": "node",
 					"data": map[string]any{
 						"user_id":  senderID,
 						"nickname": fmt.Sprintf("%d. %s", i+1, album.Title),
 						"content": []map[string]any{
-							{"type": "file", "data": map[string]any{"file": pf.candidates[0]}},
+							{"type": "image", "data": map[string]any{"file": pf.candidates[0]}},
 						},
 					},
 				})
@@ -189,15 +195,18 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 		}
 	}
 
-	// 清理封面临时文件
-	for _, album := range albums {
-		if album.Source == "Bika" {
-			for _, ext := range []string{".jpg", ".jpeg", ".png", ".webp"} {
-				coverPath := filepath.Join(a.tmpDir(), fmt.Sprintf("bika_cover_%s%s", album.ID, ext))
-				_ = os.Remove(coverPath)
+	// 延迟清理封面临时文件（等待发送完成）
+	go func() {
+		time.Sleep(5 * time.Minute)
+		for _, album := range albums {
+			if album.Source == "Bika" {
+				for _, ext := range []string{".jpg", ".jpeg", ".png", ".webp"} {
+					coverPath := filepath.Join(a.tmpDir(), fmt.Sprintf("bika_cover_%s%s", album.ID, ext))
+					_ = os.Remove(coverPath)
+				}
 			}
 		}
-	}
+	}()
 
 	// 缓存供回复下载
 	dailyCacheKey := fmt.Sprintf("daily:%d", groupID)
