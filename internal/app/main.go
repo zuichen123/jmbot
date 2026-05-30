@@ -2015,6 +2015,7 @@ func (a *App) handleMessageEvent(data map[string]any) {
 
 	regexEnabled := a.getRegexEnabled(messageType, groupID)
 	numbers := extractJMNumbersFromEvent(data, regexEnabled)
+	log.Printf("[JM] regex=%v numbers=%v group=%d", regexEnabled, numbers, groupID)
 	if len(numbers) > 0 {
 		a.enqueueDownloads(numbers, messageType, groupID, userID, data)
 	}
