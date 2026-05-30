@@ -138,7 +138,7 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 			},
 		})
 
-		// 封面节点（使用file类型）
+		// 封面节点
 		coverPath := ""
 		if album.Source == "Bika" && album.CoverURL != "" {
 			coverPath = a.downloadBikaCover(album.ID)
@@ -149,7 +149,17 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 		}
 
 		if coverPath != "" && fileExists(coverPath) {
-			if pf, err := a.bot.prepareForwardFile(cfg, coverPath); err == nil && len(pf.candidates) > 0 {
+			// 确保图片格式正确并缩放到210p
+			fixedPath := a.ensureValidImage(coverPath)
+			resizedPath := a.resizeImageTo210p(fixedPath)
+			coverToSend := coverPath
+			if resizedPath != "" && fileExists(resizedPath) {
+				coverToSend = resizedPath
+			}
+			if fixedPath != coverPath {
+				defer os.Remove(fixedPath)
+			}
+			if pf, err := a.bot.prepareForwardFile(cfg, coverToSend); err == nil && len(pf.candidates) > 0 {
 				nodes = append(nodes, map[string]any{
 					"type": "node",
 					"data": map[string]any{

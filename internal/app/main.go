@@ -3910,6 +3910,81 @@ func fileSizeMB(path string) float64 {
 	return float64(st.Size()) / 1024.0 / 1024.0
 }
 
+// ensureValidImage 确保图片格式正确（处理扩展名与实际格式不匹配的情况）
+func (a *App) ensureValidImage(srcPath string) string {
+	ext := strings.ToLower(filepath.Ext(srcPath))
+	
+	// 检测图片实际格式
+	actualFormat, err := detectImageFormat(srcPath)
+	if err != nil {
+		return srcPath
+	}
+	
+	// 如果扩展名与实际格式匹配，直接返回
+	if (ext == ".jpg" || ext == ".jpeg") && actualFormat == "jpeg" {
+		return srcPath
+	}
+	if ext == ".png" && actualFormat == "png" {
+		return srcPath
+	}
+	if ext == ".webp" && actualFormat == "webp" {
+		return srcPath
+	}
+	
+	// 格式不匹配，转换为JPEG
+	return convertImageToJPEG(srcPath)
+}
+
+func detectImageFormat(filePath string) (string, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	
+	header := make([]byte, 12)
+	_, err = f.Read(header)
+	if err != nil {
+		return "", err
+	}
+	
+	if header[0] == 0xFF && header[1] == 0xD8 {
+		return "jpeg", nil
+	}
+	if header[0] == 0x89 && header[1] == 0x50 && header[2] == 0x4E && header[3] == 0x47 {
+		return "png", nil
+	}
+	if string(header[0:4]) == "RIFF" && string(header[8:12]) == "WEBP" {
+		return "webp", nil
+	}
+	return "", fmt.Errorf("unknown format")
+}
+
+func convertImageToJPEG(srcPath string) string {
+	f, err := os.Open(srcPath)
+	if err != nil {
+		return srcPath
+	}
+	defer f.Close()
+	
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return srcPath
+	}
+	
+	tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("converted_%d.jpg", time.Now().UnixNano()))
+	out, err := os.Create(tmpPath)
+	if err != nil {
+		return srcPath
+	}
+	defer out.Close()
+	
+	if err := jpeg.Encode(out, img, &jpeg.Options{Quality: 90}); err != nil {
+		return srcPath
+	}
+	return tmpPath
+}
+
 // resizeImageTo210p 缩放图片到210p高度（用于缩略图），返回新文件路径
 func (a *App) resizeImageTo210p(srcPath string) string {
 	f, err := os.Open(srcPath)
