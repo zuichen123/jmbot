@@ -1248,6 +1248,7 @@ func (a *App) handleMessageEvent(data map[string]any) {
 	rawMessage := strings.TrimSpace(toString(data["raw_message"]))
 	userID := toInt64(data["user_id"])
 	groupID := toInt64(data["group_id"])
+	log.Printf("[Message] type=%s group=%d user=%d raw=%q", messageType, groupID, userID, rawMessage)
 	scope := requestScope(messageType, groupID, userID)
 	soutuScopeKey := requestSoutuScope(messageType, groupID, userID)
 	soutuCompatScopeKey := requestSoutuCompatScope(messageType, groupID, userID)
