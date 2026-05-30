@@ -138,7 +138,7 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 			},
 		})
 
-		// 封面节点（使用image类型）
+		// 封面节点（使用file类型）
 		coverPath := ""
 		if album.Source == "Bika" && album.CoverURL != "" {
 			coverPath = a.downloadBikaCover(album.ID)
@@ -149,20 +149,14 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 		}
 
 		if coverPath != "" && fileExists(coverPath) {
-			// 缩放封面到210p
-			resizedPath := a.resizeImageTo210p(coverPath)
-			coverToSend := coverPath
-			if resizedPath != "" && fileExists(resizedPath) {
-				coverToSend = resizedPath
-			}
-			if pf, err := a.bot.prepareForwardFile(cfg, coverToSend); err == nil && len(pf.candidates) > 0 {
+			if pf, err := a.bot.prepareForwardFile(cfg, coverPath); err == nil && len(pf.candidates) > 0 {
 				nodes = append(nodes, map[string]any{
 					"type": "node",
 					"data": map[string]any{
 						"user_id":  senderID,
 						"nickname": fmt.Sprintf("%d. %s", i+1, album.Title),
 						"content": []map[string]any{
-							{"type": "image", "data": map[string]any{"file": pf.candidates[0]}},
+							{"type": "file", "data": map[string]any{"file": pf.candidates[0]}},
 						},
 					},
 				})
