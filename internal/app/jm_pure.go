@@ -1136,6 +1136,35 @@ func convertToJPEG(file string) (string, error) {
 	return tmpFile, jpeg.Encode(out, img, &jpeg.Options{Quality: 90})
 }
 
+// imageToPDF 把图片转换为PDF文件
+func imageToPDF(imagePath, pdfPath string) error {
+	f, err := os.Open(imagePath)
+	if err != nil {
+		return err
+	}
+	cfg, _, err := image.DecodeConfig(f)
+	f.Close()
+	if err != nil {
+		return err
+	}
+
+	pdf := gofpdf.NewCustom(&gofpdf.InitType{UnitStr: "mm"})
+	wmm := float64(cfg.Width) * pixelToMM
+	hmm := float64(cfg.Height) * pixelToMM
+	pdf.AddPageFormat("P", gofpdf.SizeType{Wd: wmm, Ht: hmm})
+
+	ext := strings.ToLower(filepath.Ext(imagePath))
+	imgType := "PNG"
+	if ext == ".jpg" || ext == ".jpeg" {
+		imgType = "JPG"
+	} else if ext == ".webp" {
+		imgType = "WEBP"
+	}
+
+	pdf.ImageOptions(imagePath, 0, 0, wmm, hmm, false, gofpdf.ImageOptions{ImageType: imgType}, 0, "")
+	return pdf.OutputFileAndClose(pdfPath)
+}
+
 func buildTestPDF(outFile, number, password string) error {
 	if err := os.MkdirAll(filepath.Dir(outFile), 0o755); err != nil {
 		return err

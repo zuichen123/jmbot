@@ -138,7 +138,7 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 			},
 		})
 
-		// 封面节点
+		// 封面PDF
 		coverPath := ""
 		if album.Source == "Bika" && album.CoverURL != "" {
 			coverPath = a.downloadBikaCover(album.ID)
@@ -149,27 +149,21 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 		}
 
 		if coverPath != "" && fileExists(coverPath) {
-			// 确保图片格式正确并缩放到210p
-			fixedPath := a.ensureValidImage(coverPath)
-			resizedPath := a.resizeImageTo210p(fixedPath)
-			coverToSend := coverPath
-			if resizedPath != "" && fileExists(resizedPath) {
-				coverToSend = resizedPath
-			}
-			if fixedPath != coverPath {
-				defer os.Remove(fixedPath)
-			}
-			if pf, err := a.bot.prepareForwardFile(cfg, coverToSend); err == nil && len(pf.candidates) > 0 {
-				nodes = append(nodes, map[string]any{
-					"type": "node",
-					"data": map[string]any{
-						"user_id":  senderID,
-						"nickname": fmt.Sprintf("%d. %s", i+1, album.Title),
-						"content": []map[string]any{
-							{"type": "image", "data": map[string]any{"file": pf.candidates[0]}},
+			// 把封面图片转换为PDF
+			pdfPath := filepath.Join(a.tmpDir(), fmt.Sprintf("daily_cover_%s_%d.pdf", album.ID, time.Now().UnixNano()))
+			if err := imageToPDF(coverPath, pdfPath); err == nil {
+				if pf, err := a.bot.prepareForwardFile(cfg, pdfPath); err == nil && len(pf.candidates) > 0 {
+					nodes = append(nodes, map[string]any{
+						"type": "node",
+						"data": map[string]any{
+							"user_id":  senderID,
+							"nickname": fmt.Sprintf("%d. %s", i+1, album.Title),
+							"content": []map[string]any{
+								{"type": "file", "data": map[string]any{"file": pf.candidates[0]}},
+							},
 						},
-					},
-				})
+					})
+				}
 			}
 		}
 	}

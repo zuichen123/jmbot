@@ -1611,7 +1611,7 @@ func (a *App) handleMessageEvent(data map[string]any) {
 
 		// 构建详细信息
 		tags := strings.Join(al.Tags, ", ")
-		// 获取封面
+		// 获取封面并转换为PDF
 		coverPath := ""
 		// 优先从本地manga目录获取
 		if mangaPath, ok, _ := a.findMangaPageByID(al.ID, 1); ok && fileExists(mangaPath) {
@@ -1628,11 +1628,21 @@ func (a *App) handleMessageEvent(data map[string]any) {
 			}
 		}
 
-		// 使用转发消息发送（信息+封面）
+		// 把封面图片转换为PDF
+		pdfPath := ""
+		if coverPath != "" && fileExists(coverPath) {
+			pdfPath = filepath.Join(a.tmpDir(), fmt.Sprintf("cover_%s_%d.pdf", al.ID, time.Now().UnixNano()))
+			if err := imageToPDF(coverPath, pdfPath); err != nil {
+				log.Printf("[验车] 封面转PDF失败: %v", err)
+				pdfPath = ""
+			}
+		}
+
+		// 使用转发消息发送（信息+封面PDF）
 		cfg := a.currentConfig()
 		infoMsg := fmt.Sprintf("【本子详情】\nID：%s\n标题：%s\n描述：%s\n标签：%s\n章节：%d\n浏览：%s", al.ID, al.Title, al.Description, tags, al.Episodes, al.Views)
-		log.Printf("[验车] 发送转发消息: coverPath=%q", coverPath)
-		a.sendComicForwardMessage(messageType, groupID, userID, infoMsg, coverPath, "", cfg)
+		log.Printf("[验车] 发送转发消息: pdfPath=%q", pdfPath)
+		a.sendComicForwardMessage(messageType, groupID, userID, infoMsg, "", pdfPath, cfg)
 		return
 	}
 	if m := mustMatch(`^(?:/jm\s+search|搜索)\s+(.+)$`, rawMessage); m != nil {
@@ -3019,16 +3029,19 @@ func (a *App) notifyAdminSendFailure(groupID int64, jmNumber, title, filePath st
 // real QQ file. Comic files inside merged forwards can point to transient NapCat
 // paths and become unopenable in chat history.
 func (a *App) sendComicForwardMessage(messageType string, groupID, userID int64, infoMsg, coverPath, filePath string, cfg Config) bool {
-	// 转发卡片失败时回退到普通文本消息+图片
+	// 转发卡片失败时回退到普通文本消息+文件
 	infoOK := a.sendComicInfoForwardMessage(messageType, groupID, userID, infoMsg, coverPath, cfg)
 	if !infoOK {
 		a.sendMessage(messageType, groupID, userID, infoMsg)
-		// 转发失败时单独发送封面图片
+		// 转发失败时单独发送封面PDF
 		if coverPath != "" && fileExists(coverPath) {
-			if messageType == "group" && groupID > 0 {
-				a.bot.SendGroupImage(groupID, coverPath)
-			} else if messageType == "private" && userID > 0 {
-				a.bot.SendPrivateMsgWithImage(userID, coverPath)
+			pdfPath := filepath.Join(a.tmpDir(), fmt.Sprintf("cover_%d.pdf", time.Now().UnixNano()))
+			if err := imageToPDF(coverPath, pdfPath); err == nil {
+				if messageType == "group" && groupID > 0 {
+					a.bot.SendGroupFile(cfg, groupID, pdfPath)
+				} else if messageType == "private" && userID > 0 {
+					a.bot.SendPrivateFile(cfg, userID, pdfPath)
+				}
 			}
 		}
 	}
@@ -3077,28 +3090,22 @@ func (a *App) sendComicInfoForwardMessage(messageType string, groupID, userID in
 	}}
 
 	if coverPath != "" && fileExists(coverPath) {
-		// 确保图片格式正确并缩放到210p
-		fixedPath := a.ensureValidImage(coverPath)
-		resizedPath := a.resizeImageTo210p(fixedPath)
-		coverToSend := coverPath
-		if resizedPath != "" && fileExists(resizedPath) && resizedPath != coverPath {
-			coverToSend = resizedPath
-		}
-		if fixedPath != coverPath {
-			defer os.Remove(fixedPath)
-		}
-		if pf, err := a.bot.prepareForwardFile(cfg, coverToSend); err == nil && len(pf.candidates) > 0 {
-			if pf.cleanup != nil {
-				defer pf.cleanup()
+		// 把封面图片转换为PDF
+		pdfPath := filepath.Join(a.tmpDir(), fmt.Sprintf("cover_%d.pdf", time.Now().UnixNano()))
+		if err := imageToPDF(coverPath, pdfPath); err == nil {
+			if pf, err := a.bot.prepareForwardFile(cfg, pdfPath); err == nil && len(pf.candidates) > 0 {
+				if pf.cleanup != nil {
+					defer pf.cleanup()
+				}
+				nodes = append(nodes, map[string]any{
+					"type": "node",
+					"data": map[string]any{
+						"user_id":  senderID,
+						"nickname": nickname,
+						"content":  []map[string]any{{"type": "file", "data": map[string]any{"file": pf.candidates[0]}}},
+					},
+				})
 			}
-			nodes = append(nodes, map[string]any{
-				"type": "node",
-				"data": map[string]any{
-					"user_id":  senderID,
-					"nickname": nickname,
-					"content":  []map[string]any{{"type": "image", "data": map[string]any{"file": pf.candidates[0]}}},
-				},
-			})
 		}
 	}
 
