@@ -362,6 +362,72 @@ func (j *JMBridge) SearchBestAlbum(ctx context.Context, keyword string) (*Album,
 	return j.GetAlbum(ctx, bestID)
 }
 
+// SearchAlbums 搜索本子返回多个结果
+func (j *JMBridge) SearchAlbums(ctx context.Context, keyword string, limit int) ([]SearchResultItem, error) {
+	if j.localTest {
+		return nil, errors.New("local test mode")
+	}
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return nil, errors.New("empty keyword")
+	}
+	data, err := j.reqAPI(ctx, "/search", map[string]string{
+		"main_tag":     "0",
+		"search_query": keyword,
+		"page":         "1",
+		"o":            "mr",
+		"t":            "a",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if redirectID := toJMID(anyToString(data["redirect_aid"])); redirectID != "" {
+		al, err := j.GetAlbum(ctx, redirectID)
+		if err != nil {
+			return nil, err
+		}
+		return []SearchResultItem{{
+			Source: "JM",
+			ID:     al.ID,
+			Title:  al.Title,
+			Tags:   al.Tags,
+		}}, nil
+	}
+
+	content, ok := data["content"].([]any)
+	if !ok || len(content) == 0 {
+		return nil, errors.New("not found")
+	}
+
+	results := make([]SearchResultItem, 0, limit)
+	for _, item := range content {
+		if len(results) >= limit {
+			break
+		}
+		row, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := toJMID(anyToString(row["id"]))
+		title := anyToString(row["name"])
+		category := anyToString(row["category"])
+		author := anyToString(row["author"])
+		tags := []string{}
+		if category != "" {
+			tags = append(tags, category)
+		}
+		results = append(results, SearchResultItem{
+			Source: "JM",
+			ID:     id,
+			Title:  title,
+			Author: author,
+			Tags:   tags,
+		})
+	}
+	return results, nil
+}
+
 func (j *JMBridge) ensureDomains(ctx context.Context) {
 	j.mu.RLock()
 	if j.domainsOK {

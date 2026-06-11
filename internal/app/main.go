@@ -1594,19 +1594,46 @@ func (a *App) handleMessageEvent(data map[string]any) {
 				return
 			}
 		} else {
-			// 否则按关键词搜索
+			// 否则按关键词搜索，显示前10个结果
 			keyword := normalizeSearchKeyword(input)
 			log.Printf("[验车] 关键词搜索: %s (原始: %s)", keyword, input)
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-			al, err = a.jm.SearchBestAlbum(ctx, keyword)
+			results, searchErr := a.jm.SearchAlbums(ctx, keyword, 10)
 			cancel()
-			if err != nil || al == nil {
-				log.Printf("[验车] 搜索失败: err=%v", err)
+			if searchErr != nil || len(results) == 0 {
+				log.Printf("[验车] 搜索失败: err=%v", searchErr)
 				a.sendMessage(messageType, groupID, userID, "未找到相关本子")
 				return
 			}
+
+			// 缓存搜索结果供用户选择
+			searchScope := requestScope(messageType, groupID, userID)
+			a.searchMu.Lock()
+			a.search[searchScope] = PendingSearch{
+				At:         time.Now(),
+				AggResults: results,
+			}
+			a.searchMu.Unlock()
+
+			// 显示搜索结果列表
+			lines := make([]string, 0, len(results))
+			for i, r := range results {
+				tags := strings.Join(r.Tags, ", ")
+				if len(tags) > 40 {
+					tags = tags[:40] + "..."
+				}
+				author := ""
+				if r.Author != "" {
+					author = " 作者：" + r.Author
+				}
+				lines = append(lines, fmt.Sprintf("%d. [JM] %s%s\n   标签：%s", i+1, r.Title, author, tags))
+			}
+			msg := fmt.Sprintf("搜索结果（共%d条）：\n%s\n\n回复 序号 下载（可批量：1 2 3）", len(results), strings.Join(lines, "\n"))
+			a.sendMessage(messageType, groupID, userID, msg)
+			return
 		}
 
+		// 纯数字JM号查询，直接显示详情
 		log.Printf("[验车] 获取到本子: ID=%s 标题=%s", al.ID, al.Title)
 
 		// 构建详细信息
