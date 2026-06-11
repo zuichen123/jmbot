@@ -1705,18 +1705,14 @@ func (a *App) handleMessageEvent(data map[string]any) {
 			}
 		}
 
-		// 搜索JM
+		// 搜索JM（返回前10个结果）
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		al, err := a.jm.SearchBestAlbum(ctx, keyword)
-		if err == nil && al != nil {
-			allResults = append(allResults, SearchResultItem{
-				Source: "JM",
-				ID:     al.ID,
-				Title:  al.Title,
-				Author: "",
-				Tags:   al.Tags,
-			})
+		jmResults, jmErr := a.jm.SearchAlbums(ctx, keyword, 10)
+		if jmErr != nil {
+			log.Printf("[Search] JM搜索失败: %v", jmErr)
+		} else {
+			allResults = append(allResults, jmResults...)
 		}
 
 		if len(allResults) == 0 {
