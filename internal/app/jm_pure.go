@@ -411,11 +411,23 @@ func (j *JMBridge) SearchAlbums(ctx context.Context, keyword string, limit int) 
 		}
 		id := toJMID(anyToString(row["id"]))
 		title := anyToString(row["name"])
-		category := anyToString(row["category"])
 		author := anyToString(row["author"])
 		tags := []string{}
-		if category != "" {
+		// 解析category字段（可能是JSON对象或字符串）
+		if cat, ok := row["category"].(map[string]any); ok {
+			if catTitle := anyToString(cat["title"]); catTitle != "" {
+				tags = append(tags, catTitle)
+			}
+		} else if category := anyToString(row["category"]); category != "" {
 			tags = append(tags, category)
+		}
+		// 解析tags字段（数组）
+		if tagsArr, ok := row["tags"].([]any); ok {
+			for _, t := range tagsArr {
+				if tagStr := anyToString(t); tagStr != "" {
+					tags = append(tags, tagStr)
+				}
+			}
 		}
 		results = append(results, SearchResultItem{
 			Source: "JM",
