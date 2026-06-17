@@ -44,9 +44,6 @@ type Config struct {
 	AdminID              int64  `yaml:"admin_id"`
 	HTTPHost             string `yaml:"http_host"`
 	HTTPPort             int    `yaml:"http_port"`
-	PreviewHost          string `yaml:"preview_host"`
-	PreviewPort          int    `yaml:"preview_port"`
-	PreviewPublicBaseURL string `yaml:"preview_public_base_url"`
 	WebsocketURL         string `yaml:"websocket_url"`
 	WebsocketToken       string `yaml:"websocket_token"`
 
@@ -321,9 +318,6 @@ func Main() {
 	mainMux := http.NewServeMux()
 	mainMux.HandleFunc("/", app.handleHTTPEvent)
 	mainServer := &http.Server{Handler: mainMux}
-	previewMux := http.NewServeMux()
-	app.registerPreviewRoutes(previewMux)
-	previewServer := &http.Server{Handler: previewMux}
 
 	mainTries := 1
 	if cfg.HTTPPortFallback {
@@ -335,25 +329,6 @@ func Main() {
 	}
 	if mainPort != cfg.HTTPPort {
 		log.Printf("main port %d unavailable, fallback to %d", cfg.HTTPPort, mainPort)
-	}
-	previewListener, previewPort, err := listenWithFallback(cfg.PreviewHost, cfg.PreviewPort, cfg.PortFallbackTries)
-	if err != nil {
-		log.Fatalf("listen preview http failed: %v", err)
-	}
-	if previewPort != cfg.PreviewPort {
-		log.Printf("preview port %d unavailable, fallback to %d", cfg.PreviewPort, previewPort)
-	}
-	var previewExtraListener net.Listener
-	if altHost := pairedHostForDualStack(cfg.PreviewHost); altHost != "" {
-		altAddr := net.JoinHostPort(altHost, strconv.Itoa(previewPort))
-		ln, listenErr := net.Listen("tcp", altAddr)
-		if listenErr == nil {
-			previewExtraListener = ln
-		} else if isAddrInUseErr(listenErr) {
-			log.Printf("preview %s is already covered by dual-stack listener", altAddr)
-		} else {
-			log.Printf("preview extra listener %s failed: %v", altAddr, listenErr)
-		}
 	}
 
 	var bypassServer *http.Server
@@ -391,20 +366,6 @@ func Main() {
 			errCh <- serveErr
 		}
 	}()
-	go func() {
-		log.Printf("cbz preview listening at %s", previewListener.Addr().String())
-		if serveErr := previewServer.Serve(previewListener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			errCh <- serveErr
-		}
-	}()
-	if previewExtraListener != nil {
-		go func() {
-			log.Printf("cbz preview listening at %s", previewExtraListener.Addr().String())
-			if serveErr := previewServer.Serve(previewExtraListener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-				errCh <- serveErr
-			}
-		}()
-	}
 
 	select {
 	case <-ctx.Done():
@@ -417,9 +378,6 @@ func Main() {
 	defer cancel()
 	if err := mainServer.Shutdown(shutdownCtx); err != nil {
 		log.Printf("main server shutdown error: %v", err)
-	}
-	if err := previewServer.Shutdown(shutdownCtx); err != nil {
-		log.Printf("preview server shutdown error: %v", err)
 	}
 	if bypassServer != nil {
 		if err := bypassServer.Shutdown(shutdownCtx); err != nil {
@@ -486,9 +444,6 @@ func writeMinimalConfigTemplate(configPath string) error {
 admin_id: 0
 http_host: "0.0.0.0"
 http_port: 8071
-preview_host: "::"
-preview_port: 3502
-preview_public_base_url: "https://jm.zuichen.top:3502"
 
 # NapCat OneBot WebSocket 地址与鉴权
 websocket_url: "ws://127.0.0.1:13001"
@@ -546,20 +501,6 @@ func fillDefaults(cfg *Config) {
 	if cfg.HTTPPort == 0 {
 		cfg.HTTPPort = 8071
 	}
-	if strings.TrimSpace(cfg.PreviewHost) == "" {
-		cfg.PreviewHost = "::"
-	}
-	if cfg.PreviewPort <= 0 {
-		cfg.PreviewPort = 3502
-	}
-	if strings.TrimSpace(cfg.PreviewPublicBaseURL) == "" {
-		previewHost := strings.TrimSpace(cfg.PreviewHost)
-		if previewHost == "" || previewHost == "::" || previewHost == "0.0.0.0" {
-			previewHost = "127.0.0.1"
-		}
-		cfg.PreviewPublicBaseURL = fmt.Sprintf("http://%s:%d", previewHost, cfg.PreviewPort)
-	}
-	cfg.PreviewPublicBaseURL = strings.TrimRight(strings.TrimSpace(cfg.PreviewPublicBaseURL), "/")
 	if cfg.WebsocketURL == "" {
 		cfg.WebsocketURL = "ws://127.0.0.1:13001"
 	}
@@ -2861,7 +2802,7 @@ func (a *App) processTask(task DownloadTask) {
 	} else {
 		ok := sendFunc()
 		if !ok {
-			failMsg := "文件发送失败\n可在线预览/下载：" + a.previewPublicURL(task.Number)
+			failMsg := "文件发送失败"
 			a.sendMessage(task.MessageType, task.GroupID, task.UserID, failMsg)
 			// 通知管理员
 			a.notifyAdminSendFailure(task.GroupID, task.Number, albumTitle, sendPath)
@@ -3093,14 +3034,7 @@ func (a *App) sendComicInfoForwardMessage(messageType string, groupID, userID in
 		nickname = "文件助手"
 	}
 
-	previewURL := ""
-	if m := regexp.MustCompile(`车牌号：\s*(\d+)`).FindStringSubmatch(infoMsg); len(m) > 1 {
-		previewURL = a.previewPublicURL(m[1])
-	}
 	text := strings.TrimSpace(infoMsg)
-	if previewURL != "" {
-		text += "\n在线预览/下载：" + previewURL
-	}
 	if text == "" {
 		text = "文件信息"
 	}
@@ -3804,19 +3738,6 @@ func normalizeSearchKeyword(k string) string {
 func htmlUnescape(s string) string {
 	replacer := strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`, "&#39;", "'", "&#91;", "[", "&#93;", "]")
 	return replacer.Replace(s)
-}
-
-func (a *App) previewPublicURL(id string) string {
-	cfg := a.currentConfig()
-	base := strings.TrimRight(strings.TrimSpace(cfg.PreviewPublicBaseURL), "/")
-	if base == "" {
-		base = fmt.Sprintf("http://127.0.0.1:%d", cfg.PreviewPort)
-	}
-	id = normalizeJMID(id)
-	if id == "" {
-		return base
-	}
-	return base + "/" + id
 }
 
 func findPDF(dir, number, title string) (string, string) {
