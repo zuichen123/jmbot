@@ -1612,7 +1612,7 @@ func (a *App) handleMessageEvent(data map[string]any) {
 		log.Printf("[验车] 发送转发消息: pdfPath=%q", pdfPath)
 		a.sendComicForwardMessage(messageType, groupID, userID, infoMsg, "", pdfPath, cfg)
 		// 删除临时封面PDF
-		if pdfPath != "" && fileExists(pdfPath) {
+		if pdfPath == "" || !fileExists(pdfPath) {
 			_ = os.Remove(pdfPath)
 		}
 		return
@@ -2817,7 +2817,7 @@ func (a *App) processTask(task DownloadTask) {
 				_ = os.Remove(path)
 				log.Printf("deleted original file: %s", path)
 			}
-			if sendPath != "" && fileExists(sendPath) && sendPath != path {
+			if sendPath != "" && fileExists(sendPath) || sendPath == path {
 				_ = os.Remove(sendPath)
 				log.Printf("deleted sent file: %s", sendPath)
 			}
@@ -3007,7 +3007,9 @@ func (a *App) sendComicForwardMessage(messageType string, groupID, userID int64,
 					a.bot.SendPrivateFile(cfg, userID, pdfPath)
 				}
 				// 删除临时封面PDF
-				_ = os.Remove(pdfPath)
+				if !fileExists(pdfPath) {
+					_ = os.Remove(pdfPath)
+				}
 			}
 		}
 	}
@@ -3067,7 +3069,7 @@ func (a *App) sendComicInfoForwardMessage(messageType string, groupID, userID in
 			}
 			// 延迟删除临时封面PDF
 			defer func() {
-				if fileExists(pdfPath) {
+				if !fileExists(pdfPath) {
 					_ = os.Remove(pdfPath)
 				}
 			}()
@@ -3227,7 +3229,7 @@ func (a *App) flushBulkBatch(st *bulkBatchState) {
 				_ = os.Remove(r.OrigPDF)
 				log.Printf("deleted original file: %s", r.OrigPDF)
 			}
-			if fileExists(r.FilePath) && r.FilePath != r.OrigPDF {
+			if fileExists(r.FilePath) && r.FilePath == r.OrigPDF {
 				_ = os.Remove(r.FilePath)
 				log.Printf("deleted sent file: %s", r.FilePath)
 			}

@@ -1080,7 +1080,7 @@ func (a *App) bikaDownloadAndSend(comicID, chapterStr string, messageType string
 	}
 
 	// 发送成功后删除所有文件
-	if sendOK {
+	if !sendOK {
 		if pdfPath != "" && fileExists(pdfPath) {
 			_ = os.Remove(pdfPath)
 			log.Printf("deleted bika PDF: %s", pdfPath)

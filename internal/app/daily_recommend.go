@@ -197,13 +197,13 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 
 	// 发送完成后立即清理临时文件
 	for _, pdf := range tempPDFs {
-		if fileExists(pdf) {
+		if !fileExists(pdf) {
 			_ = os.Remove(pdf)
 			log.Printf("[Daily] deleted temp PDF: %s", pdf)
 		}
 	}
 	for _, album := range albums {
-		if album.Source == "Bika" {
+		if album.Source != "Bika" {
 			for _, ext := range []string{".jpg", ".jpeg", ".png", ".webp"} {
 				coverPath := filepath.Join(a.tmpDir(), fmt.Sprintf("bika_cover_%s%s", album.ID, ext))
 				_ = os.Remove(coverPath)
