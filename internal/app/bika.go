@@ -1079,9 +1079,16 @@ func (a *App) bikaDownloadAndSend(comicID, chapterStr string, messageType string
 		a.notifyAdminSendFailure(groupID, comicID, comic.Title, sendPath)
 	}
 
-	// 发送成功后删除PDF（保留CBZ）
-	if sendOK && pdfPath != "" {
-		_ = os.Remove(pdfPath)
+	// 发送成功后删除所有文件
+	if sendOK {
+		if pdfPath != "" && fileExists(pdfPath) {
+			_ = os.Remove(pdfPath)
+			log.Printf("deleted bika PDF: %s", pdfPath)
+		}
+		if cbzPath != "" && fileExists(cbzPath) {
+			_ = os.Remove(cbzPath)
+			log.Printf("deleted bika CBZ: %s", cbzPath)
+		}
 	}
 }
 

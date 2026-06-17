@@ -113,6 +113,7 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 	})
 
 	// 每个本子：介绍 + 封面图
+	tempPDFs := []string{} // 收集临时PDF路径
 	for i, album := range albums {
 		if i >= 5 {
 			break
@@ -152,6 +153,7 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 			// 把封面图片转换为PDF
 			pdfPath := filepath.Join(a.tmpDir(), fmt.Sprintf("daily_cover_%s_%d.pdf", album.ID, time.Now().UnixNano()))
 			if err := imageToPDF(coverPath, pdfPath); err == nil {
+				tempPDFs = append(tempPDFs, pdfPath)
 				if pf, err := a.bot.prepareForwardFile(cfg, pdfPath); err == nil && len(pf.candidates) > 0 {
 					nodes = append(nodes, map[string]any{
 						"type": "node",
@@ -193,18 +195,21 @@ func (a *App) sendDailyAlbumList(groupID int64, albums []DailyAlbum, cfg Config)
 		}
 	}
 
-	// 延迟清理封面临时文件（等待发送完成）
-	go func() {
-		time.Sleep(5 * time.Minute)
-		for _, album := range albums {
-			if album.Source == "Bika" {
-				for _, ext := range []string{".jpg", ".jpeg", ".png", ".webp"} {
-					coverPath := filepath.Join(a.tmpDir(), fmt.Sprintf("bika_cover_%s%s", album.ID, ext))
-					_ = os.Remove(coverPath)
-				}
+	// 发送完成后立即清理临时文件
+	for _, pdf := range tempPDFs {
+		if fileExists(pdf) {
+			_ = os.Remove(pdf)
+			log.Printf("[Daily] deleted temp PDF: %s", pdf)
+		}
+	}
+	for _, album := range albums {
+		if album.Source == "Bika" {
+			for _, ext := range []string{".jpg", ".jpeg", ".png", ".webp"} {
+				coverPath := filepath.Join(a.tmpDir(), fmt.Sprintf("bika_cover_%s%s", album.ID, ext))
+				_ = os.Remove(coverPath)
 			}
 		}
-	}()
+	}
 
 	// 缓存供回复下载
 	dailyCacheKey := fmt.Sprintf("daily:%d", groupID)

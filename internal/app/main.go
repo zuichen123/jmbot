@@ -1670,6 +1670,10 @@ func (a *App) handleMessageEvent(data map[string]any) {
 		infoMsg := fmt.Sprintf("【本子详情】\nID：%s\n标题：%s\n描述：%s\n标签：%s\n章节：%d\n浏览：%s", al.ID, al.Title, al.Description, tags, al.Episodes, al.Views)
 		log.Printf("[验车] 发送转发消息: pdfPath=%q", pdfPath)
 		a.sendComicForwardMessage(messageType, groupID, userID, infoMsg, "", pdfPath, cfg)
+		// 删除临时封面PDF
+		if pdfPath != "" && fileExists(pdfPath) {
+			_ = os.Remove(pdfPath)
+		}
 		return
 	}
 	if m := mustMatch(`^(?:/jm\s+search|搜索)\s+(.+)$`, rawMessage); m != nil {
@@ -2862,26 +2866,22 @@ func (a *App) processTask(task DownloadTask) {
 			// 通知管理员
 			a.notifyAdminSendFailure(task.GroupID, task.Number, albumTitle, sendPath)
 		}
+		// 发送完成后立即删除所有临时文件
 		for _, c := range cleanup {
 			_ = os.Remove(c)
 		}
-		// 发送成功后延迟删除文件（保留一天）
 		if ok {
-			go func(origPath, sendPath string, number string) {
-				// 延迟24小时删除
-				time.Sleep(24 * time.Hour)
-				// 删除原始PDF文件
-				if strings.EqualFold(filepath.Ext(origPath), ".pdf") && fileExists(origPath) {
-					_ = os.Remove(origPath)
-					log.Printf("deleted original PDF after delay: %s", origPath)
-				}
-				// 删除非cbz的发送文件
-				if !strings.EqualFold(filepath.Ext(sendPath), ".cbz") && fileExists(sendPath) {
-					_ = os.Remove(sendPath)
-					log.Printf("deleted non-cbz file after delay: %s", sendPath)
-				}
-				a.deleteMangaDirByID(normalizeJMID(number))
-			}(path, sendPath, task.Number)
+			// 发送成功，删除原始PDF和发送文件
+			if path != "" && fileExists(path) {
+				_ = os.Remove(path)
+				log.Printf("deleted original file: %s", path)
+			}
+			if sendPath != "" && fileExists(sendPath) && sendPath != path {
+				_ = os.Remove(sendPath)
+				log.Printf("deleted sent file: %s", sendPath)
+			}
+			// 删除manga目录
+			a.deleteMangaDirByID(normalizeJMID(task.Number))
 		}
 	}
 	_ = name
@@ -3065,6 +3065,8 @@ func (a *App) sendComicForwardMessage(messageType string, groupID, userID int64,
 				} else if messageType == "private" && userID > 0 {
 					a.bot.SendPrivateFile(cfg, userID, pdfPath)
 				}
+				// 删除临时封面PDF
+				_ = os.Remove(pdfPath)
 			}
 		}
 	}
@@ -3129,6 +3131,12 @@ func (a *App) sendComicInfoForwardMessage(messageType string, groupID, userID in
 					},
 				})
 			}
+			// 延迟删除临时封面PDF
+			defer func() {
+				if fileExists(pdfPath) {
+					_ = os.Remove(pdfPath)
+				}
+			}()
 		}
 	}
 
@@ -3278,21 +3286,18 @@ func (a *App) flushBulkBatch(st *bulkBatchState) {
 		_ = os.Remove(c)
 	}
 
-	// 批量发送完成后延迟删除文件（保留一天）
+	// 批量发送完成后立即删除所有文件
 	for _, r := range st.Results {
-		if r.FilePath != "" && r.OrigPDF != "" {
-			go func(origPath, filePath, number string) {
-				time.Sleep(24 * time.Hour)
-				if strings.EqualFold(filepath.Ext(origPath), ".pdf") && fileExists(origPath) {
-					_ = os.Remove(origPath)
-					log.Printf("deleted original PDF after delay: %s", origPath)
-				}
-				if !strings.EqualFold(filepath.Ext(filePath), ".cbz") && fileExists(filePath) {
-					_ = os.Remove(filePath)
-					log.Printf("deleted non-cbz file after delay: %s", filePath)
-				}
-				a.deleteMangaDirByID(normalizeJMID(number))
-			}(r.OrigPDF, r.FilePath, r.Number)
+		if r.FilePath != "" {
+			if r.OrigPDF != "" && fileExists(r.OrigPDF) {
+				_ = os.Remove(r.OrigPDF)
+				log.Printf("deleted original file: %s", r.OrigPDF)
+			}
+			if fileExists(r.FilePath) && r.FilePath != r.OrigPDF {
+				_ = os.Remove(r.FilePath)
+				log.Printf("deleted sent file: %s", r.FilePath)
+			}
+			a.deleteMangaDirByID(normalizeJMID(r.Number))
 		}
 	}
 }
