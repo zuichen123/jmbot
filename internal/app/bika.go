@@ -118,7 +118,7 @@ var (
 func NewBikaClient(cfg BikaConfig) *BikaClient {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
-		baseURL = "https://api.go2778.com/"
+		baseURL = "https://picaapi.picacomic.com/"
 	}
 	quality := cfg.Quality
 	if quality == "" {
@@ -473,11 +473,8 @@ func buildBikaImageURL(fileServer, path string) string {
 		log.Printf("[Bika] 图片URL处理: 原始=%s, 处理后=%s", originalPath[:50]+"...", path[:50]+"...")
 	}
 	
-	if strings.Contains(fileServer, "go2778") || strings.Contains(fileServer, "static") {
-		return fileServer + "/static/" + path
-	}
-	directURL := fileServer + "/static/" + path
-	return strings.ReplaceAll(directURL, "picacomic", "go2778")
+	// 直接使用原始fileServer，不进行域名替换
+	return fileServer + "/static/" + path
 }
 
 func downloadBikaFile(url, filepath, token string, quality string) error {
